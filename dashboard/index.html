@@ -4,253 +4,471 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Unidirectional Threat Monitor</title>
+<meta name="description" content="SIH26145 — AI-based passive cyber threat detection for unidirectional IP traffic.">
 <style>
-  :root{
-    --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --line:#2a3038;
-    --text:#e6edf3; --dim:#8b949e; --accent:#58a6ff;
-    --crit:#f85149; --high:#ff9d33; --med:#e3b341; --low:#3fb950;
-    --mono:ui-monospace,"Cascadia Code",Consolas,"Courier New",monospace;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);
-       font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif}
-  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
-         padding:14px 20px;background:var(--panel);border-bottom:1px solid var(--line)}
-  h1{font-size:16px;margin:0;letter-spacing:.4px;font-weight:600}
-  .badge{font:11px/1 var(--mono);padding:5px 9px;border-radius:4px;
-         background:rgba(63,185,80,.12);color:var(--low);border:1px solid rgba(63,185,80,.35)}
-  .spacer{flex:1}
-  .conn{font:11px var(--mono);color:var(--dim)}
-  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;
-       background:var(--crit);margin-right:5px;vertical-align:middle}
-  .dot.on{background:var(--low)}
+/* ===== RESET & VARS ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0e14;--bg-panel:#111720;--bg-panel2:#161d2a;--bg-elevated:#1a2233;
+  --border:#1e2a3a;--border-light:#2a3a52;
+  --text:#e2e8f0;--text-dim:#64748b;--text-muted:#475569;
+  --accent:#3b82f6;--accent-glow:rgba(59,130,246,.15);
+  --crit:#ef4444;--crit-bg:rgba(239,68,68,.08);--crit-glow:rgba(239,68,68,.25);
+  --high:#f97316;--high-bg:rgba(249,115,22,.08);--high-glow:rgba(249,115,22,.25);
+  --med:#eab308;--med-bg:rgba(234,179,8,.08);--med-glow:rgba(234,179,8,.2);
+  --low:#22c55e;--low-bg:rgba(34,197,94,.08);--low-glow:rgba(34,197,94,.2);
+  --mono:ui-monospace,"Cascadia Code","SF Mono",Consolas,"Courier New",monospace;
+  --sans:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --radius:10px;--radius-lg:14px;
+}
+body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans);min-height:100vh;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none}
+img{display:block;max-width:100%}
+button{cursor:pointer;font:inherit;color:inherit;border:none;background:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--border-light)}
 
-  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
-            padding:12px 20px;background:var(--panel2);border-bottom:1px solid var(--line)}
-  select,button{background:#0d1117;color:var(--text);border:1px solid var(--line);
-                border-radius:5px;padding:7px 11px;font:13px var(--mono)}
-  button{cursor:pointer;border-color:#2f6f4f;background:#12301f;color:#7ee2a8}
-  button:hover:not(:disabled){background:#173d28}
-  button:disabled{opacity:.45;cursor:not-allowed}
-  label{font-size:12px;color:var(--dim)}
+/* ===== LAYOUT ===== */
+.app{display:flex;flex-direction:column;height:100vh}
 
-  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
-         gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
-  .tile{background:var(--panel);padding:12px 16px}
-  .tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim)}
-  .tile .v{font:20px/1.3 var(--mono);margin-top:3px}
+/* ===== HEADER ===== */
+.header{display:flex;align-items:center;gap:14px;padding:12px 20px;background:var(--bg-panel);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.header__title{font:600 14px/1.2 var(--sans);letter-spacing:.6px;text-transform:uppercase;color:var(--text);display:flex;align-items:center;gap:10px}
+.header__title svg{width:18px;height:18px;color:var(--accent)}
+.badge{display:inline-flex;align-items:center;gap:6px;font:11px/1 var(--mono);padding:5px 10px;border-radius:6px;border:1px solid rgba(34,197,94,.25);background:rgba(34,197,94,.06);color:var(--low)}
+.badge--warn{border-color:rgba(234,179,8,.3);background:rgba(234,179,8,.06);color:var(--med)}
+.spacer{flex:1}
+.conn{display:flex;align-items:center;gap:6px;font:11px var(--mono);color:var(--text-dim)}
+.conn__dot{width:8px;height:8px;border-radius:50%;background:var(--crit);transition:background .3s,box-shadow .3s}
+.conn__dot.on{background:var(--low);box-shadow:0 0 8px var(--low-glow),0 0 2px var(--low)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.conn__dot.on{animation:pulse 2s ease-in-out infinite}
 
-  main{display:grid;grid-template-columns:minmax(340px,1fr) minmax(340px,1.2fr);
-       gap:1px;background:var(--line);min-height:calc(100vh - 210px)}
-  section{background:var(--bg);display:flex;flex-direction:column;min-width:0}
-  .head{padding:10px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.9px;
-        color:var(--dim);background:var(--panel);border-bottom:1px solid var(--line)}
-  .list{overflow-y:auto;flex:1;max-height:calc(100vh - 250px)}
+/* ===== CONTROLS ===== */
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 20px;background:var(--bg-panel2);border-bottom:1px solid var(--border)}
+.controls label{font:500 11px/1 var(--sans);color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
+select{appearance:none;background:var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2364748b'/%3E%3C/svg%3E") no-repeat right 10px center;color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 28px 8px 12px;font:12px var(--mono);transition:border-color .2s}
+select:hover{border-color:var(--border-light)}
+select:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-glow)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--radius);font:500 12px var(--mono);transition:all .2s;border:1px solid transparent}
+.btn--primary{background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;border-color:rgba(34,197,94,.3);box-shadow:0 2px 8px rgba(34,197,94,.15)}
+.btn--primary:hover:not(:disabled){background:linear-gradient(135deg,#16a34a,#15803d);box-shadow:0 2px 12px rgba(34,197,94,.25)}
+.btn--primary:disabled{opacity:.4;cursor:not-allowed}
+.btn--danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;border-color:rgba(239,68,68,.3)}
+.btn--danger:hover{background:linear-gradient(135deg,#dc2626,#b91c1c)}
+.controls__status{font:12px var(--mono);color:var(--text-dim);margin-left:4px}
 
-  .alert{padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer;
-         border-left:3px solid transparent;display:flex;gap:12px;align-items:baseline}
-  .alert:hover{background:var(--panel2)}
-  .alert.sel{background:var(--panel2);border-left-color:var(--accent)}
-  .alert.CRITICAL{border-left-color:var(--crit)}
-  .alert.HIGH{border-left-color:var(--high)}
-  .alert.MEDIUM{border-left-color:var(--med)}
-  .alert.LOW{border-left-color:var(--low)}
-  .alert .cls{font:12px var(--mono);font-weight:600;min-width:118px}
-  .alert .conf{font:12px var(--mono);color:var(--accent);min-width:44px}
-  .alert .sev{font:10px var(--mono);padding:2px 6px;border-radius:3px;background:#21262d}
-  .alert .t{font:11px var(--mono);color:var(--dim);margin-left:auto;white-space:nowrap}
-  .sev.CRITICAL{color:var(--crit)} .sev.HIGH{color:var(--high)}
-  .sev.MEDIUM{color:var(--med)} .sev.LOW{color:var(--low)}
+/* ===== STATS TILES ===== */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--border);border-bottom:1px solid var(--border)}
+.tile{background:var(--bg-panel);padding:14px 18px;transition:background .2s}
+.tile:hover{background:var(--bg-panel2)}
+.tile__label{font:500 10px/1 var(--sans);text-transform:uppercase;letter-spacing:.8px;color:var(--text-dim)}
+.tile__value{font:600 22px/1.3 var(--mono);margin-top:4px;transition:color .3s}
+.tile__sub{font:10px var(--mono);color:var(--text-muted);margin-top:2px}
 
-  .detail{padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 250px)}
-  .empty{color:var(--dim);padding:40px 20px;text-align:center;font-size:13px}
-  .dt{font-size:19px;font-weight:600;margin:0 0 4px}
-  .meta{font:12px var(--mono);color:var(--dim);margin-bottom:16px;word-break:break-all}
-  .kv{display:grid;grid-template-columns:120px 1fr;gap:6px 14px;
-      font:12px var(--mono);margin-bottom:18px}
-  .kv .k{color:var(--dim)}
-  .ev{margin-bottom:13px;padding-bottom:13px;border-bottom:1px solid var(--line)}
-  .ev:last-child{border-bottom:none}
-  .ev .row{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
-  .ev .f{font:12px var(--mono);color:var(--accent)}
-  .ev .v{font:13px var(--mono);font-weight:600}
-  .bar{height:5px;background:#21262d;border-radius:3px;margin-top:7px;overflow:hidden;
-       position:relative}
-  .bar i{display:block;height:100%;background:var(--high);border-radius:3px}
-  .bar u{position:absolute;top:-2px;width:2px;height:9px;background:var(--dim)}
-  .ev .n{font-size:11.5px;color:var(--dim);margin-top:6px}
-  .ev .base{font:11px var(--mono);color:var(--dim);margin-top:4px}
-  footer{padding:9px 20px;font-size:11px;color:var(--dim);background:var(--panel);
-         border-top:1px solid var(--line)}
-  @media(max-width:860px){main{grid-template-columns:1fr}}
+/* ===== MAIN PANELS ===== */
+.main{display:flex;flex:1;background:var(--border);min-height:0;position:relative}
+@media(max-width:860px){.main{flex-direction:column}}
+
+.panel{background:var(--bg);display:flex;flex-direction:column;min-height:0}
+.panel--left{flex:0 0 var(--left-w, 45%); min-width:340px; max-width:80%}
+.panel--right{flex:1; min-width:380px}
+.resizer{width:4px;background:var(--border);cursor:col-resize;transition:background .2s;flex-shrink:0}
+.resizer:hover,.resizer.is-dragging{background:var(--accent)}
+.panel__head{padding:10px 18px;font:600 11px/1 var(--sans);text-transform:uppercase;letter-spacing:.9px;color:var(--text-dim);background:var(--bg-panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.panel__head .count{font:11px var(--mono);color:var(--accent);margin-left:auto}
+.panel__body{overflow-y:auto;flex:1;min-height:0}
+
+/* ===== ALERT LIST ===== */
+.alert-empty{color:var(--text-muted);padding:48px 20px;text-align:center;font:13px var(--sans)}
+.alert-empty svg{width:40px;height:40px;color:var(--border-light);margin:0 auto 12px;display:block}
+
+.alert-item{display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:1px solid var(--border);border-left:3px solid transparent;cursor:pointer;transition:all .15s}
+.alert-item:hover{background:var(--bg-panel)}
+.alert-item.selected{background:var(--bg-panel2);border-left-color:var(--accent)}
+.alert-item.sev-CRITICAL{border-left-color:var(--crit)}.alert-item.sev-CRITICAL:hover,.alert-item.sev-CRITICAL.selected{background:var(--crit-bg)}
+.alert-item.sev-HIGH{border-left-color:var(--high)}.alert-item.sev-HIGH:hover,.alert-item.sev-HIGH.selected{background:var(--high-bg)}
+.alert-item.sev-MEDIUM{border-left-color:var(--med)}.alert-item.sev-MEDIUM:hover,.alert-item.sev-MEDIUM.selected{background:var(--med-bg)}
+.alert-item.sev-LOW{border-left-color:var(--low)}.alert-item.sev-LOW:hover,.alert-item.sev-LOW.selected{background:var(--low-bg)}
+
+.alert-item__class{font:600 12px var(--mono);min-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alert-item__conf{font:12px var(--mono);color:var(--accent);min-width:40px}
+.alert-item__sev{font:600 9px/1 var(--mono);padding:3px 7px;border-radius:4px;text-transform:uppercase;letter-spacing:.5px}
+.sev-CRITICAL .alert-item__sev{background:var(--crit-bg);color:var(--crit);box-shadow:0 0 6px var(--crit-glow)}
+.sev-HIGH .alert-item__sev{background:var(--high-bg);color:var(--high);box-shadow:0 0 6px var(--high-glow)}
+.sev-MEDIUM .alert-item__sev{background:var(--med-bg);color:var(--med)}
+.sev-LOW .alert-item__sev{background:var(--low-bg);color:var(--low)}
+.alert-item__time{font:11px var(--mono);color:var(--text-muted);margin-left:auto;white-space:nowrap}
+
+/* ===== DETAIL PANEL ===== */
+.detail-empty{color:var(--text-muted);padding:48px 20px;text-align:center;font:13px var(--sans)}
+.detail-empty svg{width:40px;height:40px;color:var(--border-light);margin:0 auto 12px;display:block}
+
+.detail{padding:20px;overflow-y:auto;flex:1}
+.detail__title{font:600 18px/1.2 var(--sans);margin-bottom:4px}
+.detail__flow{font:11px var(--mono);color:var(--text-dim);word-break:break-all;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+
+.detail__grid{display:grid;grid-template-columns:110px 1fr;gap:6px 16px;font:12px var(--mono);margin-bottom:20px}
+.detail__grid .k{color:var(--text-dim)}
+.detail__grid .v{color:var(--text)}
+.detail__grid .sev-badge{display:inline-block;padding:2px 8px;border-radius:4px;font:600 10px var(--mono)}
+.detail__grid .sev-badge.CRITICAL{background:var(--crit-bg);color:var(--crit)}
+.detail__grid .sev-badge.HIGH{background:var(--high-bg);color:var(--high)}
+.detail__grid .sev-badge.MEDIUM{background:var(--med-bg);color:var(--med)}
+.detail__grid .sev-badge.LOW{background:var(--low-bg);color:var(--low)}
+
+.detail__section{font:600 11px/1 var(--sans);text-transform:uppercase;letter-spacing:.9px;color:var(--text-dim);padding:10px 0;margin:0 -20px;padding-left:20px;padding-right:20px;background:var(--bg-panel);border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:14px}
+
+.evidence{margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.evidence:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.evidence__head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.evidence__feature{font:12px var(--mono);color:var(--accent)}
+.evidence__value{font:600 13px var(--mono);color:var(--text)}
+.evidence__bar{height:6px;background:var(--bg-elevated);border-radius:3px;margin-top:8px;overflow:visible;position:relative}
+.evidence__bar-fill{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--high),var(--crit));max-width:100%;transition:width .4s ease-out}
+.evidence__bar-tick{position:absolute;top:-3px;width:2px;height:12px;background:var(--text-dim);border-radius:1px;transition:left .4s}
+.evidence__baseline{font:11px var(--mono);color:var(--text-muted);margin-top:6px}
+.evidence__note{font:11.5px/1.5 var(--sans);color:var(--text-dim);margin-top:5px}
+
+/* ===== FOOTER ===== */
+.footer{padding:8px 20px;font:11px var(--sans);color:var(--text-muted);background:var(--bg-panel);border-top:1px solid var(--border);display:flex;align-items:center;gap:12px}
+.footer a{color:var(--accent);font-weight:500}
+
+/* ===== ANIMATIONS ===== */
+@keyframes slideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+.alert-item.new{animation:slideIn .3s ease-out}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.detail{animation:fadeIn .2s ease-out}
 </style>
 </head>
 <body>
-<header>
-  <h1>UNIDIRECTIONAL THREAT MONITOR</h1>
-  <span class="badge">PASSIVE &middot; READ-ONLY &middot; NO RETURN PATH</span>
+<div class="app">
+
+<!-- HEADER -->
+<header class="header">
+  <h1 class="header__title">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    Unidirectional Threat Monitor
+  </h1>
+  <span class="badge" id="badge">PASSIVE · READ-ONLY · NO RETURN PATH</span>
+  <span id="modelBadge"></span>
   <span class="spacer"></span>
-  <span class="conn"><span class="dot" id="dot"></span><span id="connText">connecting</span></span>
+  <span class="conn"><span class="conn__dot" id="dot"></span><span id="connText">connecting…</span></span>
 </header>
 
+<!-- CONTROLS -->
 <div class="controls">
-  <label for="capture">capture</label>
+  <label for="capture">Capture</label>
   <select id="capture"></select>
-  <label for="speed">replay speed</label>
+  <label for="speed">Speed</label>
   <select id="speed">
-    <option value="10">10x</option>
-    <option value="20" selected>20x</option>
-    <option value="1">1x (real time)</option>
-    <option value="0">max (benchmark)</option>
+    <option value="10">10×</option>
+    <option value="20" selected>20×</option>
+    <option value="1">1× real-time</option>
+    <option value="0">Max (benchmark)</option>
   </select>
-  <button id="start">▶ Start replay</button>
-  <span id="status" class="conn"></span>
+  <button class="btn btn--primary" id="startBtn">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+    Start Replay
+  </button>
+  <span class="controls__status" id="status"></span>
 </div>
 
+<!-- STATS -->
 <div class="tiles">
-  <div class="tile"><div class="k">Packets</div><div class="v" id="s_pkts">0</div></div>
-  <div class="tile"><div class="k">Flows</div><div class="v" id="s_flows">0</div></div>
-  <div class="tile"><div class="k">Windows</div><div class="v" id="s_win">0</div></div>
-  <div class="tile"><div class="k">Alerts</div><div class="v" id="s_alerts">0</div></div>
-  <div class="tile"><div class="k">Critical</div><div class="v" id="s_crit" style="color:var(--crit)">0</div></div>
-  <div class="tile"><div class="k">High</div><div class="v" id="s_high" style="color:var(--high)">0</div></div>
-  <div class="tile"><div class="k">Throughput</div><div class="v" id="s_pps">0</div></div>
+  <div class="tile"><div class="tile__label">Packets</div><div class="tile__value" id="s_pkts">0</div></div>
+  <div class="tile"><div class="tile__label">Flows</div><div class="tile__value" id="s_flows">0</div></div>
+  <div class="tile"><div class="tile__label">Windows</div><div class="tile__value" id="s_win">0</div></div>
+  <div class="tile"><div class="tile__label">Alerts</div><div class="tile__value" id="s_alerts">0</div></div>
+  <div class="tile"><div class="tile__label">Critical</div><div class="tile__value" id="s_crit" style="color:var(--crit)">0</div></div>
+  <div class="tile"><div class="tile__label">High</div><div class="tile__value" id="s_high" style="color:var(--high)">0</div></div>
+  <div class="tile"><div class="tile__label">Throughput</div><div class="tile__value" id="s_pps">0</div><div class="tile__sub" id="s_mbps"></div></div>
 </div>
 
-<main>
-  <section>
-    <div class="head">Live alerts &mdash; newest first</div>
-    <div class="list" id="list"><div class="empty">No alerts yet. Start a replay.</div></div>
-  </section>
-  <section>
-    <div class="head">Selected alert &mdash; why it fired</div>
-    <div class="detail" id="detail"><div class="empty">Click an alert to see its evidence.</div></div>
-  </section>
-</main>
+<!-- MAIN -->
+<div class="main" id="main">
+  <!-- Alert List -->
+  <div class="panel panel--left">
+    <div class="panel__head">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      Live Alerts — newest first
+      <span class="count" id="alertCount">0</span>
+    </div>
+    <div class="panel__body" id="list">
+      <div class="alert-empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+        No alerts yet. Select a capture and start a replay.
+      </div>
+    </div>
+  </div>
 
-<footer id="foot">Controlled synthetic demo traffic &mdash; results demonstrate detector behaviour on known ground truth, not production accuracy.</footer>
+  <!-- Resizer -->
+  <div class="resizer" id="resizer"></div>
+
+  <!-- Detail Panel -->
+  <div class="panel panel--right">
+    <div class="panel__head">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+      Alert Detail — why it fired
+    </div>
+    <div class="panel__body" id="detail">
+      <div class="detail-empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+        Click an alert to inspect its evidence and scoring rationale.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <span>SIH Problem Statement 26145 — Passive threat detection for unidirectional IP traffic</span>
+  <span class="spacer"></span>
+  <span>Controlled synthetic demo traffic — results demonstrate detector behaviour on known ground truth</span>
+</footer>
+
+</div>
 
 <script>
+/* ===== STATE ===== */
 const $ = id => document.getElementById(id);
-let alerts = [], selected = null, ws = null;
+let alerts = [], selected = null, ws = null, isRunning = false;
 
+/* ===== FORMATTERS ===== */
 const fmt = n => (n ?? 0).toLocaleString();
 const num = v => {
-  if (v === null || v === undefined) return "-";
+  if (v == null) return "–";
   const a = Math.abs(v);
   if (a >= 1e6) return (v/1e6).toFixed(2) + "M";
   if (a >= 1e3) return (v/1e3).toFixed(1) + "k";
-  if (a >= 10)  return v.toFixed(1);
+  if (a >= 10) return v.toFixed(1);
   if (Number.isInteger(v)) return String(v);
   return v.toFixed(3);
 };
 
-function connect(){
+/* ===== WEBSOCKET ===== */
+function connect() {
   ws = new WebSocket(`ws://${location.host}/stream`);
-  ws.onopen = () => { $("dot").classList.add("on"); $("connText").textContent = "stream connected"; };
-  ws.onclose = () => {
-    $("dot").classList.remove("on"); $("connText").textContent = "disconnected — retrying";
-    setTimeout(connect, 1500);
+  ws.onopen = () => {
+    $("dot").classList.add("on");
+    $("connText").textContent = "stream connected";
   };
+  ws.onclose = () => {
+    $("dot").classList.remove("on");
+    $("connText").textContent = "disconnected — retrying…";
+    setTimeout(connect, 2000);
+  };
+  ws.onerror = () => {};
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
-    if (m.type === "snapshot"){ alerts = m.data.alerts || []; renderList(); renderStats(m.data.stats); }
-    else if (m.type === "alert"){ alerts.unshift(m.data); if(alerts.length>500) alerts.pop(); renderList(); }
-    else if (m.type === "stats"){ renderStats(m.data); }
-    else if (m.type === "done"){ renderStats(m.data); running(false); $("status").textContent = "replay complete"; }
-    else if (m.type === "error"){ $("status").textContent = "error: " + m.data.message; running(false); }
+    if (m.type === "snapshot") {
+      alerts = m.data.alerts || [];
+      renderList();
+      renderStats(m.data.stats);
+    } else if (m.type === "alert") {
+      alerts.unshift(m.data);
+      if (alerts.length > 500) alerts.pop();
+      renderList(true);
+    } else if (m.type === "stats") {
+      renderStats(m.data);
+    } else if (m.type === "done") {
+      renderStats(m.data);
+      setRunning(false);
+      $("status").textContent = "✓ Replay complete";
+      $("status").style.color = "var(--low)";
+    } else if (m.type === "error") {
+      $("status").textContent = "✗ " + m.data.message;
+      $("status").style.color = "var(--crit)";
+      setRunning(false);
+    }
   };
 }
 
-function renderStats(s){
+/* ===== STATS ===== */
+function renderStats(s) {
   if (!s) return;
-  $("s_pkts").textContent  = fmt(s.packets);
-  $("s_flows").textContent = fmt(s.flows);
-  $("s_win").textContent   = fmt(s.windows);
-  $("s_alerts").textContent= fmt(s.alerts);
-  $("s_crit").textContent  = fmt((s.by_severity||{}).CRITICAL || 0);
-  $("s_high").textContent  = fmt((s.by_severity||{}).HIGH || 0);
-  $("s_pps").textContent   = s.throughput_pps ? num(s.throughput_pps) + " p/s" : "0";
+  animateValue($("s_pkts"), s.packets);
+  animateValue($("s_flows"), s.flows);
+  animateValue($("s_win"), s.windows);
+  animateValue($("s_alerts"), s.alerts);
+  $("s_crit").textContent = fmt((s.by_severity || {}).CRITICAL || 0);
+  $("s_high").textContent = fmt((s.by_severity || {}).HIGH || 0);
+  $("s_pps").textContent = s.throughput_pps ? num(s.throughput_pps) + " p/s" : "0";
+  $("s_mbps").textContent = s.throughput_mbps ? num(s.throughput_mbps) + " Mbps" : "";
 }
 
-function renderList(){
+function animateValue(el, target) {
+  const current = parseInt(el.textContent.replace(/,/g, "")) || 0;
+  if (current === target) return;
+  el.textContent = fmt(target);
+}
+
+/* ===== ALERT LIST ===== */
+function renderList(isNew = false) {
   const el = $("list");
-  if (!alerts.length){ el.innerHTML = '<div class="empty">No alerts yet. Start a replay.</div>'; return; }
-  el.innerHTML = alerts.map((a,i) => `
-    <div class="alert ${a.severity} ${i===selected?'sel':''}" data-i="${i}">
-      <span class="cls">${a.threat_class}</span>
-      <span class="conf">${(a.confidence*100).toFixed(0)}%</span>
-      <span class="sev ${a.severity}">${a.severity}</span>
-      <span class="t">${(a.timestamp||'').slice(11,19)}</span>
+  $("alertCount").textContent = alerts.length;
+  if (!alerts.length) {
+    el.innerHTML = `<div class="alert-empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+      No alerts yet. Select a capture and start a replay.</div>`;
+    return;
+  }
+  el.innerHTML = alerts.map((a, i) => `
+    <div class="alert-item sev-${a.severity} ${i === selected ? 'selected' : ''} ${i === 0 && isNew ? 'new' : ''}" data-i="${i}">
+      <span class="alert-item__class">${a.threat_class}</span>
+      <span class="alert-item__conf">${(a.confidence * 100).toFixed(0)}%</span>
+      <span class="alert-item__sev">${a.severity}</span>
+      <span class="alert-item__time">${(a.timestamp || '').slice(11, 19)}</span>
     </div>`).join("");
-  el.querySelectorAll(".alert").forEach(n =>
-    n.onclick = () => { selected = +n.dataset.i; renderList(); renderDetail(); });
+  el.querySelectorAll(".alert-item").forEach(n =>
+    n.onclick = () => { selected = +n.dataset.i; renderList(); renderDetail(); }
+  );
 }
 
-function evidenceBar(ev){
-  // Bar shows observed value against its learned baseline. The tick marks the
-  // baseline; a bar well past it is the visual form of "why this fired".
-  if (ev.baseline === null || ev.baseline === undefined) return "";
+/* ===== EVIDENCE BAR ===== */
+function evidenceBar(ev) {
+  if (ev.baseline == null) return "";
   const b = Math.abs(ev.baseline), v = Math.abs(ev.value);
-  const scale = Math.max(b * 2, v, 1e-9);
-  const vw = Math.min(100, v / scale * 100);
-  const bw = Math.min(100, b / scale * 100);
-  return `<div class="bar"><i style="width:${vw}%"></i><u style="left:${bw}%"></u></div>
-          <div class="base">baseline ${num(ev.baseline)}${ev.unit||""} &nbsp;·&nbsp; observed ${num(ev.value)}${ev.unit||""}</div>`;
+  const scale = Math.max(b * 2.5, v * 1.1, 1e-9);
+  const vw = Math.min(100, (v / scale) * 100);
+  const bw = Math.min(100, (b / scale) * 100);
+  return `<div class="evidence__bar">
+    <span class="evidence__bar-fill" style="width:${vw}%"></span>
+    <span class="evidence__bar-tick" style="left:${bw}%"></span>
+  </div>
+  <div class="evidence__baseline">baseline ${num(ev.baseline)}${ev.unit || ""} · observed <strong style="color:var(--text)">${num(ev.value)}${ev.unit || ""}</strong></div>`;
 }
 
-function renderDetail(){
+/* ===== DETAIL PANEL ===== */
+function renderDetail() {
   const a = alerts[selected];
-  if (!a){ $("detail").innerHTML = '<div class="empty">Click an alert to see its evidence.</div>'; return; }
-  const anomaly = a.anomaly_score !== undefined && a.anomaly_score !== null
-    ? `<div class="k">anomaly score</div><div>${a.anomaly_score.toFixed(3)} <span style="color:var(--dim)">(model corroboration)</span></div>` : "";
-  $("detail").innerHTML = `
-    <div class="dt">${a.threat_class.replace(/_/g," ")}</div>
-    <div class="meta">${a.flow_id}</div>
-    <div class="kv">
-      <div class="k">confidence</div><div>${(a.confidence*100).toFixed(1)}%</div>
-      <div class="k">severity</div><div class="sev ${a.severity}">${a.severity}</div>
-      <div class="k">source</div><div>${a.src}</div>
-      <div class="k">destination</div><div>${a.dst}</div>
-      <div class="k">detector</div><div>${a.detector}</div>
-      <div class="k">window</div><div>${a.window.duration_s}s ending ${a.timestamp.slice(11,23)}</div>
+  if (!a) {
+    $("detail").innerHTML = `<div class="detail-empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+      Click an alert to inspect its evidence and scoring rationale.</div>`;
+    return;
+  }
+  const anomaly = a.anomaly_score != null
+    ? `<div class="k">anomaly score</div><div class="v">${a.anomaly_score.toFixed(3)} <span style="color:var(--text-dim)">(model corroboration)</span></div>` : "";
+  $("detail").innerHTML = `<div class="detail" style="animation:fadeIn .25s ease-out">
+    <div class="detail__title">${a.threat_class.replace(/_/g, " ")}</div>
+    <div class="detail__flow">${a.flow_id}</div>
+    <div class="detail__grid">
+      <div class="k">confidence</div><div class="v">${(a.confidence * 100).toFixed(1)}%</div>
+      <div class="k">severity</div><div class="v"><span class="sev-badge ${a.severity}">${a.severity}</span></div>
+      <div class="k">source</div><div class="v">${a.src}</div>
+      <div class="k">destination</div><div class="v">${a.dst}</div>
+      <div class="k">detector</div><div class="v">${a.detector}</div>
+      <div class="k">window</div><div class="v">${a.window.duration_s}s ending ${a.timestamp.slice(11, 23)}</div>
       ${anomaly}
     </div>
-    <div class="head" style="margin:0 -20px 14px;padding-left:20px">Evidence</div>
+    <div class="detail__section">Evidence</div>
     ${a.evidence.map(ev => `
-      <div class="ev">
-        <div class="row"><span class="f">${ev.feature}</span>
-          <span class="v">${num(ev.value)}${ev.unit ? " " + ev.unit : ""}</span></div>
+      <div class="evidence">
+        <div class="evidence__head">
+          <span class="evidence__feature">${ev.feature}</span>
+          <span class="evidence__value">${num(ev.value)}${ev.unit ? " " + ev.unit : ""}</span>
+        </div>
         ${evidenceBar(ev)}
-        ${ev.note ? `<div class="n">${ev.note}</div>` : ""}
-      </div>`).join("")}`;
+        ${ev.note ? `<div class="evidence__note">${ev.note}</div>` : ""}
+      </div>`).join("")}
+  </div>`;
 }
 
-function running(on){
-  $("start").disabled = on;
-  $("start").textContent = on ? "● Replaying…" : "▶ Start replay";
+/* ===== CONTROLS ===== */
+function setRunning(on) {
+  isRunning = on;
+  const btn = $("startBtn");
+  btn.disabled = on;
+  if (on) {
+    btn.className = "btn btn--danger";
+    btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="3"/></svg> Replaying…`;
+  } else {
+    btn.className = "btn btn--primary";
+    btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Start Replay`;
+  }
 }
 
-async function loadCaptures(){
-  const r = await fetch("/api/captures");
-  const d = await r.json();
-  $("capture").innerHTML = d.captures.map(c =>
-    `<option value="${c.name}" ${c.name==="mixed.pcap"?"selected":""}>${c.name} (${(c.bytes/1e6).toFixed(1)} MB)</option>`).join("");
-  if (!d.model_trained) $("foot").textContent =
-    "Anomaly model not trained — run `python train.py`. Rule detectors are unaffected. " + $("foot").textContent;
+async function loadCaptures() {
+  try {
+    const r = await fetch("/api/captures");
+    const d = await r.json();
+    $("capture").innerHTML = d.captures.map(c =>
+      `<option value="${c.name}" ${c.name === "mixed.pcap" ? "selected" : ""}>${c.name} (${(c.bytes / 1e6).toFixed(1)} MB)</option>`
+    ).join("");
+    if (!d.captures.length) {
+      $("capture").innerHTML = '<option value="">No captures found</option>';
+    }
+    if (!d.model_trained) {
+      $("modelBadge").innerHTML = '<span class="badge badge--warn">⚠ Anomaly model not trained — run python train.py</span>';
+    }
+  } catch (e) {
+    $("capture").innerHTML = '<option value="">Failed to load</option>';
+  }
 }
 
-$("start").onclick = async () => {
-  alerts = []; selected = null; renderList(); renderDetail();
-  running(true); $("status").textContent = "replaying…";
-  const r = await fetch("/api/replay", {
-    method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({capture: $("capture").value, speed: +$("speed").value, model: true})
-  });
-  const d = await r.json();
-  if (!d.ok){ $("status").textContent = d.error; running(false); }
+$("startBtn").onclick = async () => {
+  const cap = $("capture").value;
+  if (!cap) return;
+  alerts = [];
+  selected = null;
+  renderList();
+  renderDetail();
+  setRunning(true);
+  $("status").textContent = "replaying…";
+  $("status").style.color = "var(--text-dim)";
+  try {
+    const r = await fetch("/api/replay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capture: cap, speed: +$("speed").value, model: true })
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      $("status").textContent = "✗ " + d.error;
+      $("status").style.color = "var(--crit)";
+      setRunning(false);
+    }
+  } catch (e) {
+    $("status").textContent = "✗ Connection error";
+    $("status").style.color = "var(--crit)";
+    setRunning(false);
+  }
 };
 
+/* ===== RESIZER ===== */
+let isResizing = false;
+$("resizer").addEventListener("mousedown", e => {
+  isResizing = true;
+  $("resizer").classList.add("is-dragging");
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+});
+document.addEventListener("mousemove", e => {
+  if (!isResizing) return;
+  const mainRect = $("main").getBoundingClientRect();
+  let newWidth = ((e.clientX - mainRect.left) / mainRect.width) * 100;
+  newWidth = Math.max(20, Math.min(newWidth, 80));
+  document.documentElement.style.setProperty("--left-w", newWidth + "%");
+});
+document.addEventListener("mouseup", () => {
+  if (isResizing) {
+    isResizing = false;
+    $("resizer").classList.remove("is-dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }
+});
+
+/* ===== KEYBOARD ===== */
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { selected = null; renderList(); renderDetail(); }
+});
+
+/* ===== INIT ===== */
 loadCaptures();
 connect();
 </script>
