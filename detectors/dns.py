@@ -128,7 +128,7 @@ class DnsAnomalyDetector(Detector):
     def on_window(self, wf: WindowFeatures, baselines: BaselineTracker) -> list[Alert]:
         touched: set[tuple[str, str]] = set()
 
-        for src, hf in wf.by_src.items():
+        for src, hf in wf.by_host.items():
             for pkt in hf.dns_queries:
                 parent, sub = split_domain(pkt.dns_qname)
                 key = (src, parent)

@@ -54,7 +54,15 @@ def collect(pcap: str, window_s: float = 5.0):
 
     def take(window) -> None:
         wf = extract(window)
-        for src, hf in wf.by_src.items():
+        for src, hf in wf.by_host.items():
+            # MUST match AnomalyDetector.on_window()'s filter exactly.
+            # observed_as_source drops rows that exist only because a host
+            # received packets: servers and CDN edges seen from the wrong side
+            # of the tap, which have no fan-out, no SYNs and no flows credited
+            # to them. They previously made up the bulk of this population and
+            # taught the model that "normal" meant "a remote server's replies".
+            if not hf.observed_as_source:
+                continue
             if hf.packets < MIN_PACKETS:
                 continue
             vectors.append(host_vector(hf, wf.duration))

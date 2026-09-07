@@ -44,7 +44,7 @@ class ExfilDetector(Detector):
     def on_window(self, wf: WindowFeatures, baselines: BaselineTracker) -> list[Alert]:
         touched: set[tuple[str, str]] = set()
 
-        for src, hf in wf.by_src.items():
+        for src, hf in wf.by_host.items():
             for dst, out_bytes in hf.bytes_to.items():
                 in_bytes = hf.bytes_from.get(dst, 0)
                 key = (src, dst)

@@ -113,13 +113,18 @@ def update_baselines(wf: WindowFeatures, baselines: BaselineTracker) -> None:
         syn_rates = [tf.syn_in / wf.duration for tf in wf.by_dst.values()]
         baselines.observe("target_syn_rate", statistics.median(syn_rates))
 
-    if wf.by_src:
-        hosts = list(wf.by_src.values())
-        baselines.observe("syn_rate", statistics.median([h.syn_sent / wf.duration for h in hosts]))
-        baselines.observe("host_fanout_ports", statistics.median([len(h.dst_ports) for h in hosts]))
-        baselines.observe("host_fanout_hosts", statistics.median([len(h.dst_hosts) for h in hosts]))
-        baselines.observe("bytes_out", statistics.median([h.bytes_out for h in hosts]))
-        completions = [h.completion_ratio for h in hosts if h.syn_sent > 0]
+    # Only hosts we actually watched transmit. wf.by_host also holds rows for
+    # pure destinations -- created solely to carry inbound byte counts -- whose
+    # fan-out, SYN rate and outbound volume are all structurally zero. Including
+    # them dragged every median toward zero, which described addresses that
+    # never sent anything rather than the traffic on the link.
+    sources = [h for h in wf.by_host.values() if h.observed_as_source and h.packets > 0]
+    if sources:
+        baselines.observe("syn_rate", statistics.median([h.syn_sent / wf.duration for h in sources]))
+        baselines.observe("host_fanout_ports", statistics.median([len(h.dst_ports) for h in sources]))
+        baselines.observe("host_fanout_hosts", statistics.median([len(h.dst_hosts) for h in sources]))
+        baselines.observe("bytes_out", statistics.median([h.bytes_out for h in sources]))
+        completions = [h.completion_ratio for h in sources if h.has_completion_data]
         if completions:
             baselines.observe("completion_ratio", statistics.median(completions))
 

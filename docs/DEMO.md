@@ -49,7 +49,7 @@ python engine.py data/pcaps/mixed.pcap --pretty
 
 Scroll to the `SYN_FLOOD` alert and read the evidence lines out loud:
 
-> "1,500 SYN/s against a learned baseline of 10. Zero SYN/ACK for 7,500 SYN.
+> "1,500 SYN/s against a 50/s threshold. Zero SYN/ACK for 7,500 SYN.
 > 7,500 distinct sources, source entropy 12.87 bits — near-uniform, which is
 > what spoofing looks like and what one aggressive host does not."
 
@@ -102,7 +102,7 @@ Click `ANOMALOUS_FLOW`.
 
 > "IsolationForest, 200 trees, ten features per host per window, trained on
 > benign traffic only — it never saw an attack during fit, which mirrors what a
-> passive monitor can actually collect. Mean ROC-AUC 0.996 on held-out attack
+> passive monitor can actually collect. Mean ROC-AUC 0.997 on held-out attack
 > captures."
 
 Then, before anyone asks, the honest half:
@@ -158,8 +158,8 @@ two minutes.
 
 Show `docs/throughput.json` rather than running the benchmark live:
 
-> "18,357 packets per second, 48.5 Mbit, median of three runs, full pipeline with
-> the model loaded. That is 105× real time on one core of a laptop. The PS asks
+> "19,060 packets per second, 50.4 Mbit, median of three runs, full pipeline with
+> the model loaded. That is 109× real time on one core of a laptop. The PS asks
 > for measured throughput on stated hardware — that is the hardware, and that is
 > our number."
 
@@ -167,11 +167,20 @@ Show `docs/throughput.json` rather than running the benchmark live:
 
 Do not let this be dragged out of you:
 
-> "Five of six threat classes. TLS malware fingerprinting is unbuilt — computing
-> a JA3 hash is an afternoon, but validating it against traffic we synthesised
-> ourselves would prove nothing, so we would rather not claim it. No packet
-> decryption, which the PS puts out of scope. No automated blocking, because
-> blocking needs a return path and there isn't one."
+> "Four of the six threat classes complete, one partial, one absent — and I want
+> to be precise about which. Class (a) names three shapes: SYN floods and
+> spoofed floods we do, UDP reflection and amplification we do not. Class (d),
+> malware in encrypted sessions, is not built at all.
+>
+> One thing I want to correct before you ask it: (d) does *not* require
+> decryption. It asks for JA3 fingerprints and packet-size sequences from
+> metadata. So 'no decryption' is not our excuse — the honest reason is time,
+> and that a JA3 rarity score measured against fingerprints we invented
+> ourselves would prove our parser works, not that the detection works.
+>
+> No automated blocking, because blocking needs a return path and there isn't
+> one. And no payload decryption anywhere, which is constraint (b) — that part
+> we do comply with."
 
 Volunteering the gaps is what makes the rest of the numbers credible.
 
@@ -194,9 +203,25 @@ would produce false positives and we have no data to estimate how many.
 **"Would this work on real traffic?"**
 The detectors would need baseline re-tuning on the target link, which is why
 every threshold is a multiple of a learned EWMA baseline rather than a constant.
-The parts most likely to survive contact are SYN flood and port scan; the parts
-most likely to need work are the DNS bigram corpus and the beacon jitter
-tolerance.
+One caveat we should give rather than have found: each baseline is floored at a
+fixed minimum, and on a quiet metric that floor is what is actually in effect —
+so on our captures some "learned" thresholds are the constant. The parts most
+likely to survive contact are SYN flood and port scan; the parts most likely to
+need work are the DNS bigram corpus and the beacon jitter tolerance.
+
+**"You claim six threat classes — do you?"**
+No, and the README says so. Four complete, one partial, one absent. Class (a)
+covers SYN and spoofed floods but not UDP amplification; class (d) is not built.
+We would rather be counted at four-and-a-half honestly than six on a claim that
+does not survive someone opening `detectors/`.
+
+**"Are there known bugs?"**
+Yes, and they are written down in `docs/DEFECTS.md` with cause and fix rather
+than left for you to find. The one that matters most: the feature extractor
+materialises every destination host as a synthetic "source" row with zero
+packets, and those rows reach the anomaly model's training set. It does not
+change the alerts we show you, but it means a training row is not always what
+the word implies.
 
 **"What if an attacker knows your thresholds?"**
 Beaconing below CV 0.15 detection means adding jitter, which costs the attacker

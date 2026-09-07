@@ -75,15 +75,70 @@ Signals corroborate (√n, not n), so three independent weak signals outrank one
 strong one. There is no literal confidence value anywhere in the detector
 source — `tools/selftest.py` asserts every evidence value is a measured number.
 
+### How a threshold is actually built
+
+Every rule threshold comes from three layers, and it matters which one is doing
+the work in any given alert.
+
+**1. The learned EWMA baseline.** `features/baseline.py` tracks a per-metric
+exponentially-weighted mean of the *median* host or target per window, fed by
+`engine.update_baselines()`. This is the adaptive part: if the link quietens the
+baseline falls, if background traffic grows it rises.
+
+**2. The warm-up floor.** For the first `WARMUP = 12` windows — one minute at a
+5-second window — a metric has not seen enough samples to be trusted, so
+`Metric.value` returns a conservative floor from `DEFAULTS` instead. After that
+the floor is gone and the learned mean is returned, clamped only by a 1e-6
+epsilon that exists solely to stop downstream detectors dividing by zero.
+
+This is a correction. An earlier version returned `max(mean, floor)` in *both*
+branches, which made the floor a permanent lower clamp rather than a warm-up
+fallback. On a quiet link the mean converged well below the floor and never
+escaped it, so every threshold was derived from a dictionary literal — an
+adaptive-baseline API wrapped around a fixed-threshold detector. Measured on
+`normal.pcap`, all four baselines any detector reads were floor-dominated for
+the entire capture. They now report learned values:
+
+| baseline | learned mean | warm-up floor | in effect after warm-up |
+|---|---|---|---|
+| `host_fanout_ports` | 1.996 | 2.0 | learned |
+| `host_fanout_hosts` | 1.997 | 4.0 | learned |
+| `bytes_out` | 1919.45 | 2000.0 | learned |
+| `target_syn_rate` | 0.000 | 0.5 | learned |
+
+**3. Absolute engineering minimums.** A learned baseline can legitimately be
+zero — the median target on a normal link receives no SYNs at all — and six
+times zero is still zero. So each detector backstops its baseline multiple with
+an absolute minimum: `MIN_SYN_RATE = 50/s`, `MIN_PORTS = 25`, `MIN_HOSTS = 12`.
+The threshold is `max(baseline × multiplier, absolute_minimum)`.
+
+These are engineering judgements, stated as such: *fewer than 50 SYN/s is not a
+flood on any link we would deploy to.* On the demo captures they are frequently
+the binding term, precisely because the traffic is quiet. That is the honest
+position, and it is different in kind from the old floors, which were fixed
+constants **masquerading as observations**. When the minimum binds, the alert
+evidence says so rather than printing a meaningless near-zero baseline:
+
+```
+- syn_rate_pps: 1500pkt/s  (baseline 50)
+  -- median target sees no SYN traffic, so the 50/s absolute floor set the threshold
+```
+
 ### Baselines resist poisoning
 
-`features/baseline.py` keeps EWMA baselines with two protections against an
-ongoing attack teaching the system that the attack is normal:
+Two protections stop an ongoing attack teaching the system that the attack is
+normal:
 
 1. **Winsorized updates** — a sample above 4× the current mean is clipped before
    being folded in, so a burst moves the baseline slowly.
 2. **Median, not mean** — `engine.update_baselines()` feeds the *median* host or
    target per window. One host under attack cannot drag a median of fifty.
+
+The median is taken over hosts we actually observed *transmitting*
+(`observed_as_source`), not over every address in the window. Rows created only
+because a host received packets have structurally zero fan-out and zero
+outbound volume, and including them dragged every median toward zero —
+describing addresses that never sent anything rather than traffic on the link.
 
 ---
 
@@ -104,10 +159,26 @@ Defined in `features/extract.host_vector()`:
 | 4 | `unique_dst_hosts` | horizontal fan-out |
 | 5 | `unique_dst_ports` | vertical fan-out |
 | 6 | `syn_rate_pps` | connection attempt rate |
-| 7 | `completion_ratio` | observed handshake success |
+| 7 | `completion_ratio` | observed handshake success; **−1.0 when the host sent no SYN**, meaning "no data" rather than a ratio |
 | 8 | `out_in_byte_ratio` | directional asymmetry, clipped at 1000 |
 | 9 | `mean_packet_size` | payload shape proxy |
 | 10 | `flow_rate_fps` | flow creation rate |
+
+**Feature 7 was dead until recently, and the fix is worth recording.** It
+previously returned `1.0` when a host had sent no SYN — indistinguishable from
+"every handshake succeeded". Since most rows in the benign set are hosts that
+never initiate TCP, *every* training vector reported `1.0`: the column had zero
+variance, `StandardScaler` clamped its scale to 1.0, and the IsolationForest
+could never split on it. A documented ten-feature model was really
+nine-dimensional, and the missing dimension is the most discriminative one for
+scans. Returning a `−1.0` sentinel instead separates "no handshake attempted"
+from "all handshakes completed" and revived the column (`scale_` 1.0 → 0.4697,
+zero-variance columns 1 → 0).
+
+It also silently fixed a reporting bug: `detectors/anomaly.py` prints
+"N standard deviations from the benign mean" in analyst-facing evidence, and
+with a true standard deviation of zero that number was produced by the
+zero-variance fallback rather than measured.
 
 Rates are normalised by window duration so the model does not depend on the
 window size we happened to choose. Training and inference call the *same*
@@ -118,10 +189,30 @@ then fails in the pipeline.
 ### Training
 
 - **Data:** `data/pcaps/normal.pcap` only — 256 host-window vectors.
+- **Population:** hosts observed *transmitting* (`observed_as_source`) with at
+  least 20 packets in the window. `train.collect_vectors()` and
+  `AnomalyDetector.on_window()` apply this filter identically — scoring a
+  population the model was not fitted on is the same class of bug as computing
+  training features differently from inference features.
 - **Regime:** unsupervised. **The model never sees an attack during fit.**
 - **Why:** it mirrors what a passive monitor can actually collect. You can record
   a quiet week off a production link; you cannot record a labelled corpus of
   attacks against your own infrastructure on demand.
+
+**A limitation of this population, measured rather than assumed.** Of those 256
+rows, only **15 (5.9%)** initiated a flow or sent a SYN. The other 241 are
+*responders* — remote CDN edges (Google, Microsoft, Akamai, Fastly) whose reply
+traffic crosses the tap. They transmit, so they are legitimately in scope, but
+the model's idea of "normal host behaviour" is dominated by what a server looks
+like from the outside rather than by monitored clients.
+
+Filtering to initiators is not a fix on this data: it leaves 15 vectors, and
+fitting a 200-tree forest with `contamination=0.01` on 15 samples gives 0.15
+expected outliers — a degenerate model, not a cleaner one. The real constraint
+is that `normal.pcap` contains few internal clients with sustained traffic. The
+honest resolution is to generate more benign client traffic and then filter, or
+to add an initiator/responder flag as a feature and let the forest separate the
+two populations itself. Neither is done yet.
 
 ### Calibration — and a bug worth documenting
 
@@ -148,7 +239,7 @@ Attack captures are scored, never trained on. ROC-AUC over
 | `exfil.pcap` | 0.993 | 0.751 | 0.145 |
 | `mixed.pcap` | 0.997 | 0.776 | 0.154 |
 
-Mean ROC-AUC **0.996**. Live numbers in `docs/model_report.json`.
+Mean ROC-AUC **0.997**. Live numbers in `docs/model_report.json`.
 
 ### What the model does *not* do — measured, not assumed
 
@@ -196,9 +287,32 @@ Behavioural evidence stays primary — see `engine.run()`.
 | Deep learning on raw packet bytes | No labelled data, no explainability, no time. Would not survive the "why did it fire" question. |
 | LLM-based packet analysis | Wrong tool. Adds latency and cost to a problem solved by counting. |
 | TLS/QUIC decryption | Explicitly out of scope (PS constraint b). Not implemented at any layer. |
+| **TLS/QUIC *metadata* analysis (PS class d)** | **Not built — and constraint (b) is not the reason.** See the note below; conflating these two is a misreading of the PS. |
+| **UDP reflection/amplification (part of PS class a)** | Not built. Also currently unmeasurable: UDP bytes are not accumulated per target and DNS answers are discarded at `ingest/reader.py:134`. |
 | Active probing / scanning | Violates the passive constraint. `tools/isolation_check.py` proves absence mechanically. |
 | Automated blocking | Requires a return path that does not exist. |
 | Supervised threat classifier | No labelled attack data is obtainable in this deployment model. |
+
+### The distinction between constraint (b) and class (d)
+
+An earlier version of this table used "TLS/QUIC decryption is out of scope" as
+the reason class (d) was unbuilt. That is wrong, and worth correcting explicitly
+rather than quietly:
+
+- **Constraint (b)** forbids decrypting payload. We comply — the parser stops at
+  L4 plus DNS QNAMEs and never reconstructs an answer section, let alone a TLS
+  record body.
+- **Class (d)** asks for detection *"from TLS/QUIC metadata alone (JA3/JA3S or
+  JA4 fingerprints, packet-size and timing sequences), without decrypting
+  payload."* It never required decryption. JA3 is computed from ClientHello
+  *header* fields — version, cipher list, extensions, curves — which is byte
+  parsing, not decryption.
+
+So (d) was compatible with (b) all along. It is unbuilt because we ran out of
+time, and because a rare-JA3 score validated against fingerprints we invented
+ourselves would demonstrate that the parser works, not that the detection does.
+That is a weaker claim than the other five detectors can make, and it is the
+honest reason.
 
 ## 5. Reproducing
 

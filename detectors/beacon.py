@@ -53,7 +53,7 @@ class BeaconDetector(Detector):
     def on_window(self, wf: WindowFeatures, baselines: BaselineTracker) -> list[Alert]:
         touched: set[tuple[str, str, int]] = set()
 
-        for src, hf in wf.by_src.items():
+        for src, hf in wf.by_host.items():
             for dst, dport, ts, size in hf.contacts:
                 key = (src, dst, dport)
                 self.history[key].append((ts, size))

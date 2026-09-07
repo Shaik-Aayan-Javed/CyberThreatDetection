@@ -50,7 +50,7 @@ class PortScanDetector(Detector):
         port_threshold = max(base_ports * FANOUT_MULTIPLIER, MIN_PORTS)
         host_threshold = max(base_hosts * FANOUT_MULTIPLIER, MIN_HOSTS)
 
-        for src, hf in wf.by_src.items():
+        for src, hf in wf.by_host.items():
             n_ports = len(hf.dst_ports)
             n_hosts = len(hf.dst_hosts)
 
@@ -59,6 +59,14 @@ class PortScanDetector(Detector):
             if not (port_sweep or host_sweep):
                 continue
 
+            # A host that sent no SYN has no handshake outcome to judge, and
+            # completion_ratio now says so with a negative sentinel instead of
+            # the old misleading 1.0. Treat "no data" as not-a-scan, which is
+            # what the 1.0 accidentally achieved before. Deliberately keeps
+            # ICMP/UDP-only sweeps out of scope rather than admitting them
+            # through a comparison that a sentinel would silently pass.
+            if not hf.has_completion_data:
+                continue
             completion = hf.completion_ratio
             if completion > MAX_COMPLETION:
                 continue

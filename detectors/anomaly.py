@@ -193,7 +193,15 @@ class AnomalyDetector(Detector):
         # individually costs a scaler.transform plus a full forest traversal per
         # host; batching them cut end-to-end pipeline throughput loss from ~70%
         # to a few percent, measured with bench/throughput.py.
-        hosts = [(src, hf) for src, hf in wf.by_src.items() if hf.packets >= MIN_PACKETS]
+        # MUST match train.collect_vectors()'s filter exactly. Scoring a
+        # population the model was not fitted on is the classic way to get a
+        # model that validates well and then misbehaves in the pipeline, and
+        # the responder rows excluded here are precisely the ones that used to
+        # dominate the training set.
+        hosts = [
+            (src, hf) for src, hf in wf.by_host.items()
+            if hf.observed_as_source and hf.packets >= MIN_PACKETS
+        ]
         if not hosts:
             return []
 

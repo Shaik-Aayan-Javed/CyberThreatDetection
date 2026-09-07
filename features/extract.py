@@ -19,6 +19,13 @@ from dataclasses import dataclass, field
 from ingest.flows import FlowRecord, Window
 from ingest.reader import Packet
 
+# Returned by HostFeatures.completion_ratio when the host sent no SYN at all,
+# so there is no handshake outcome to report. Distinct from 0.0 ("every SYN
+# went unanswered") and from 1.0 ("every SYN completed"), both of which are
+# real measurements. Any consumer that thresholds on completion must treat a
+# negative value as "no data" rather than comparing it as a ratio.
+NO_COMPLETION_DATA = -1.0
+
 
 def shannon_entropy(counts) -> float:
     """Shannon entropy in bits over a Counter or iterable of counts.
@@ -41,9 +48,21 @@ def shannon_entropy(counts) -> float:
 
 @dataclass
 class HostFeatures:
-    """What one source address did during one window."""
+    """What one host did during one window.
+
+    Despite the `src` field name this is a *peer* row, not strictly a source
+    row: a host that only ever appears as a destination still gets one, because
+    its inbound byte counts are what make the out:in ratio meaningful. Such a
+    row is an observation of somebody else's traffic from the wrong side of the
+    tap -- it has no fan-out, no SYNs and no flows credited to it.
+
+    `observed_as_source` is what separates the two. Anything reasoning about
+    host *behaviour* -- baselines, the anomaly model -- must filter on it.
+    """
 
     src: str
+    # True once this host has been seen actually sending a packet.
+    observed_as_source: bool = False
     packets: int = 0
     bytes_out: int = 0
     bytes_in: int = 0
@@ -72,8 +91,23 @@ class HostFeatures:
 
     @property
     def completion_ratio(self) -> float:
-        """Fraction of this host's SYNs that drew an observed SYN/ACK."""
-        return self.synack_recv / self.syn_sent if self.syn_sent else 1.0
+        """Fraction of this host's SYNs that drew an observed SYN/ACK.
+
+        Returns NO_COMPLETION_DATA when the host sent no SYN. The previous
+        behaviour returned 1.0 here, which was indistinguishable from "every
+        handshake succeeded" -- so a UDP-only host, or a server observed from
+        the wrong side, reported perfect TCP completion it had never attempted.
+        Across the benign training set that made the column constant at 1.0,
+        zero-variance, and therefore unusable by the model.
+        """
+        if not self.syn_sent:
+            return NO_COMPLETION_DATA
+        return self.synack_recv / self.syn_sent
+
+    @property
+    def has_completion_data(self) -> bool:
+        """True when completion_ratio is a real measurement rather than a gap."""
+        return self.syn_sent > 0
 
     @property
     def out_in_ratio(self) -> float:
@@ -123,7 +157,9 @@ class WindowFeatures:
     duration: float
     packets: int = 0
     bytes: int = 0
-    by_src: dict[str, HostFeatures] = field(default_factory=dict)
+    # Keyed by host address, holding every peer seen in the window in either
+    # direction. Filter on HostFeatures.observed_as_source for actual senders.
+    by_host: dict[str, HostFeatures] = field(default_factory=dict)
     by_dst: dict[str, TargetFeatures] = field(default_factory=dict)
     tcp: int = 0
     udp: int = 0
@@ -146,16 +182,18 @@ def extract(window: Window) -> WindowFeatures:
     duration = window.duration if window.duration > 0 else 1e-6
     wf = WindowFeatures(window=window, duration=duration)
 
-    by_src: dict[str, HostFeatures] = {}
+    by_host: dict[str, HostFeatures] = {}
     by_dst: dict[str, TargetFeatures] = {}
 
     for pkt in window.packets:
         wf.packets += 1
         wf.bytes += pkt.length
 
-        src = by_src.get(pkt.src)
+        src = by_host.get(pkt.src)
         if src is None:
-            src = by_src[pkt.src] = HostFeatures(src=pkt.src)
+            src = by_host[pkt.src] = HostFeatures(src=pkt.src)
+        # This host has now been seen transmitting, whatever else it does.
+        src.observed_as_source = True
         dst = by_dst.get(pkt.dst)
         if dst is None:
             dst = by_dst[pkt.dst] = TargetFeatures(dst=pkt.dst)
@@ -172,9 +210,12 @@ def extract(window: Window) -> WindowFeatures:
 
         # Bytes arriving at a host are that host's inbound volume. Tracking both
         # directions per host is what makes the out:in ratio meaningful.
-        peer = by_src.get(pkt.dst)
+        # Note this deliberately does NOT set observed_as_source: receiving
+        # bytes is not behaviour, and a row created only by this branch is a
+        # peer we see from the wrong side.
+        peer = by_host.get(pkt.dst)
         if peer is None:
-            peer = by_src[pkt.dst] = HostFeatures(src=pkt.dst)
+            peer = by_host[pkt.dst] = HostFeatures(src=pkt.dst)
         peer.bytes_in += pkt.length
         peer.bytes_from[pkt.src] += pkt.length
 
@@ -212,11 +253,11 @@ def extract(window: Window) -> WindowFeatures:
             src.icmp += 1
 
     for flow_id, rec in window.flows.items():
-        hf = by_src.get(rec.src)
+        hf = by_host.get(rec.src)
         if hf is not None:
             hf.flows.add(flow_id)
 
-    wf.by_src = by_src
+    wf.by_host = by_host
     wf.by_dst = by_dst
     return wf
 

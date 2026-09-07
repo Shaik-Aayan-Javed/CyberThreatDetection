@@ -41,10 +41,20 @@ class Metric:
 
     @property
     def value(self) -> float:
-        """Current baseline, floored so early windows cannot divide by ~0."""
+        """Conservative floor while warming up, then the learned EWMA mean.
+
+        The previous version returned `max(self.mean, self.floor)` in both
+        branches, so the floor was a permanent lower clamp rather than a
+        warm-up fallback. On a quiet link the mean converged well below the
+        floor and never escaped it, which meant every threshold a detector
+        computed was derived from a dict literal in DEFAULTS rather than from
+        anything observed -- an adaptive-baseline API over a fixed-threshold
+        detector. The epsilon exists only to stop downstream detectors dividing
+        by zero; it is not a floor.
+        """
         if self.samples < BaselineTracker.WARMUP:
-            return max(self.mean, self.floor)
-        return max(self.mean, self.floor)
+            return float(self.floor)
+        return max(self.mean, 1e-6)
 
     @property
     def warm(self) -> bool:
@@ -58,19 +68,23 @@ class BaselineTracker:
     # 5s window that is one minute of observation.
     WARMUP = 12
 
-    # floor values keep a quiet network from producing absurd ratios
+    # Warm-up fallbacks, used only for the first WARMUP windows. Now that the
+    # floor is genuinely transient rather than a permanent clamp, these are
+    # sized to the observed magnitude on a quiet link instead of being set
+    # defensively high -- a floor far above the true median would make the
+    # first minute of capture blind rather than merely conservative.
     DEFAULTS: dict[str, tuple[float, float]] = {
-        # name: (ewma alpha, floor)
+        # name: (ewma alpha, warm-up floor)
         "syn_rate": (0.05, 20.0),
-        "target_syn_rate": (0.05, 10.0),
+        "target_syn_rate": (0.05, 0.5),
         "pps": (0.05, 50.0),
         "bps": (0.05, 1e5),
-        "host_fanout_ports": (0.05, 8.0),
+        "host_fanout_ports": (0.01, 2.0),
         "host_fanout_hosts": (0.05, 4.0),
         "completion_ratio": (0.05, 0.30),
         "src_entropy": (0.05, 1.0),
         "out_in_ratio": (0.05, 2.0),
-        "bytes_out": (0.05, 5e4),
+        "bytes_out": (0.01, 2000.0),
         "dns_qname_entropy": (0.05, 3.0),
         "dns_qname_len": (0.05, 20.0),
     }

@@ -15,12 +15,12 @@
       "alerts": 8,
       "capture_duration_s": 300.73,
       "runs": 3,
-      "pps_median": 18357.2,
-      "pps_min": 12209.5,
-      "pps_max": 18593.2,
-      "mbps_median": 48.52,
-      "flows_per_s_median": 11169.5,
-      "realtime_factor": 104.6
+      "pps_median": 19060.0,
+      "pps_min": 12044.9,
+      "pps_max": 20991.6,
+      "mbps_median": 50.378,
+      "flows_per_s_median": 11597.2,
+      "realtime_factor": 108.6
     },
     "synflood.pcap": {
       "packets": 47355,
@@ -29,12 +29,12 @@
       "alerts": 1,
       "capture_duration_s": 300.73,
       "runs": 3,
-      "pps_median": 17277.6,
-      "pps_min": 17050.9,
-      "pps_max": 17432.9,
-      "mbps_median": 34.66,
-      "flows_per_s_median": 11557.1,
-      "realtime_factor": 109.7
+      "pps_median": 18867.3,
+      "pps_min": 18553.2,
+      "pps_max": 19134.5,
+      "mbps_median": 37.85,
+      "flows_per_s_median": 12620.5,
+      "realtime_factor": 119.8
     }
   }
 }

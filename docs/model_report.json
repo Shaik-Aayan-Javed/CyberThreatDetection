@@ -26,8 +26,8 @@
     "samples": 256,
     "features": 10,
     "n_estimators": 200,
-    "calibration_median_raw": 0.25620687336937686,
-    "calibration_extreme_raw": -0.10148658556758483,
+    "calibration_median_raw": 0.2683360525832301,
+    "calibration_extreme_raw": -0.098057551140322,
     "benign_max_score": 0.9,
     "alert_threshold": 0.92
   },
@@ -38,38 +38,38 @@
     "unique_dst_hosts": 2.5742,
     "unique_dst_ports": 2.5352,
     "syn_rate_pps": 0.0367,
-    "completion_ratio": 1.0,
+    "completion_ratio": -0.8828,
     "out_in_byte_ratio": 9.7444,
     "mean_packet_size": 796.5066,
     "flow_rate_fps": 0.0813
   },
   "validation": {
-    "benign_score_mean": 0.0968,
-    "benign_score_p99": 0.6446,
+    "benign_score_mean": 0.0933,
+    "benign_score_p99": 0.6591,
     "per_capture": {
       "portscan.pcap": {
         "roc_auc": 1.0,
-        "attacker_window_score_mean": 0.9939,
-        "benign_window_score_mean": 0.0935,
+        "attacker_window_score_mean": 0.9716,
+        "benign_window_score_mean": 0.089,
         "attacker_windows": 3,
         "benign_windows": 248
       },
       "exfil.pcap": {
-        "roc_auc": 0.9926,
-        "attacker_window_score_mean": 0.7513,
-        "benign_window_score_mean": 0.1449,
+        "roc_auc": 0.9928,
+        "attacker_window_score_mean": 0.7271,
+        "benign_window_score_mean": 0.1374,
         "attacker_windows": 26,
         "benign_windows": 271
       },
       "mixed.pcap": {
-        "roc_auc": 0.9967,
-        "attacker_window_score_mean": 0.7764,
-        "benign_window_score_mean": 0.1538,
+        "roc_auc": 0.9968,
+        "attacker_window_score_mean": 0.7524,
+        "benign_window_score_mean": 0.1457,
         "attacker_windows": 29,
         "benign_windows": 268
       }
     },
-    "mean_roc_auc": 0.9964
+    "mean_roc_auc": 0.9965
   },
   "scope_limitation": "Per-source feature vector. Does not address spoofed-source floods, where each source appears once and the anomaly is at the target; that class is handled by the behavioural SYN flood detector."
 }

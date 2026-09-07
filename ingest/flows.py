@@ -13,15 +13,39 @@ duration regardless of how long the capture runs.
 
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass, field
 from typing import Iterator
 
 from ingest.reader import Packet, TH_ACK, TH_FIN, TH_RST, TH_SYN
 
 # A flow with no packets for this long is considered finished and evicted.
-# Bounds memory on long captures; also what makes the table usable on a live
-# stream that never ends.
 IDLE_TIMEOUT_S = 120.0
+
+# Absolute lifetime cap, NetFlow's "active timeout". A flow that keeps
+# receiving packets is never idle, so idle expiry alone cannot bound it: a bulk
+# transfer or a persistent C2 channel would accumulate counters forever and its
+# duration would stop meaning anything. At this age the record is force-expired
+# and the next packet starts a fresh one.
+MAX_DURATION_S = 1800.0
+
+# Hard ceiling on resident flow records. Idle expiry bounds memory only if the
+# arrival rate is bounded, and an attacker chooses the arrival rate: a spoofed
+# SYN flood mints one record per forged source, so ~100k unique sources/sec
+# fills gigabytes long before a 120s idle timeout makes anything eligible for
+# eviction. A monitor that dies when it sees an attack is worse than no monitor.
+MAX_FLOWS = 200_000
+
+# Once the cap is hit, evict down to this fraction of it rather than to exactly
+# the cap, so the next insert does not immediately trigger another full sweep.
+CAP_WATERMARK = 0.9
+
+# Sweep at least this often in packets, independent of capture time. The
+# capture-time trigger fires every idle_timeout/4 of *stream* time, which a
+# burst can outrun: 100k pps means 3 million records arrive inside one 30s
+# capture-time window with no sweep in between. Both triggers are deterministic
+# functions of the capture, so replay stays byte-reproducible.
+SWEEP_EVERY_PACKETS = 10_000
 
 
 @dataclass(slots=True)
@@ -67,12 +91,37 @@ class FlowRecord:
 class FlowTable:
     """Bidirectional flow table. The first packet seen defines the direction."""
 
-    def __init__(self, idle_timeout: float = IDLE_TIMEOUT_S):
+    def __init__(
+        self,
+        idle_timeout: float = IDLE_TIMEOUT_S,
+        max_duration: float = MAX_DURATION_S,
+        max_flows: int = MAX_FLOWS,
+        sweep_every_packets: int = SWEEP_EVERY_PACKETS,
+    ):
         self.flows: dict[tuple, FlowRecord] = {}
         self.idle_timeout = idle_timeout
+        self.max_duration = max_duration
+        self.max_flows = max_flows
+        self.sweep_every_packets = sweep_every_packets
+        self._watermark = max(1, int(max_flows * CAP_WATERMARK))
+
         self.total_flows = 0
         self.expired_flows = 0
-        self._last_sweep = 0.0
+        # Broken out so the reason a record left the table is visible rather
+        # than inferred. Overflow evictions in particular are lossy -- they
+        # discard live flows -- and that must be observable, not silent.
+        self.expired_idle = 0
+        self.expired_duration = 0
+        self.evicted_overflow = 0
+
+        # None until the first packet anchors it. Initialising to 0.0 would
+        # make the throttle epoch-sensitive: pcap timestamps are ~1.7e9, so
+        # `now - 0.0` always clears the interval and the first packet swept a
+        # one-element table. Harmless there, but on a capture with relative
+        # timestamps starting near zero the same expression suppresses every
+        # sweep for the first 30s of stream time instead.
+        self._last_sweep: float | None = None
+        self._packets_since_sweep = 0
 
     @staticmethod
     def _key(pkt: Packet) -> tuple:
@@ -86,7 +135,19 @@ class FlowTable:
         key = self._key(pkt)
         rec = self.flows.get(key)
 
+        # Active timeout: a flow that has been open too long is force-expired
+        # even though it is not idle, and this packet re-keys it into a fresh
+        # record. Without this a long-lived connection is never evicted at all.
+        if rec is not None and pkt.ts - rec.first_ts > self.max_duration:
+            del self.flows[key]
+            self.expired_flows += 1
+            self.expired_duration += 1
+            rec = None
+
         if rec is None:
+            # Guard the cap BEFORE inserting, so the table can never exceed it.
+            if len(self.flows) >= self.max_flows:
+                self._sweep(pkt.ts, enforce_cap=True)
             rec = FlowRecord(
                 flow_id=f"{pkt.src}:{pkt.sport}->{pkt.dst}:{pkt.dport}/{pkt.proto}",
                 src=pkt.src, dst=pkt.dst, sport=pkt.sport, dport=pkt.dport,
@@ -115,20 +176,61 @@ class FlowTable:
                 rec.rst += 1
 
         rec.last_ts = pkt.ts
+        self._packets_since_sweep += 1
         self._maybe_sweep(pkt.ts)
         return rec, forward
 
     def _maybe_sweep(self, now: float) -> None:
-        # Sweeping every packet would dominate the profile; once per timeout
-        # period keeps the table bounded without hurting throughput.
-        if now - self._last_sweep < self.idle_timeout / 4:
+        """Sweep on either capture time or packet count, whichever comes first.
+
+        Sweeping every packet would dominate the profile. Sweeping on capture
+        time alone lets a burst outrun the sweeper, because stream time barely
+        advances while millions of packets arrive -- which is precisely the
+        condition a flood creates.
+        """
+        if self._last_sweep is None:
+            # First packet: anchor the clock. There is nothing to evict yet.
+            self._last_sweep = now
             return
+        due_by_time = now - self._last_sweep >= self.idle_timeout / 4
+        due_by_packets = self._packets_since_sweep >= self.sweep_every_packets
+        if not (due_by_time or due_by_packets):
+            return
+        self._sweep(now)
+
+    def _sweep(self, now: float, enforce_cap: bool = False) -> None:
+        """Evict finished, over-age and (if still over the cap) oldest flows."""
         self._last_sweep = now
-        cutoff = now - self.idle_timeout
-        stale = [k for k, r in self.flows.items() if r.last_ts < cutoff]
-        for k in stale:
+        self._packets_since_sweep = 0
+
+        idle_cutoff = now - self.idle_timeout
+        idle_keys: list[tuple] = []
+        aged_keys: list[tuple] = []
+        for k, r in self.flows.items():
+            if r.last_ts < idle_cutoff:
+                idle_keys.append(k)
+            elif now - r.first_ts > self.max_duration:
+                aged_keys.append(k)
+
+        for k in idle_keys:
             del self.flows[k]
-        self.expired_flows += len(stale)
+        for k in aged_keys:
+            del self.flows[k]
+        self.expired_idle += len(idle_keys)
+        self.expired_duration += len(aged_keys)
+        self.expired_flows += len(idle_keys) + len(aged_keys)
+
+        # Timeouts are not a defence against cardinality: under a spoofed flood
+        # every record is both recent and short-lived, so nothing above is
+        # eligible and the table would keep growing. Past the cap we drop the
+        # least-recently-active flows outright. This is lossy by construction --
+        # we would rather lose the oldest state than the process.
+        if (enforce_cap or len(self.flows) >= self.max_flows) and len(self.flows) > self._watermark:
+            excess = len(self.flows) - self._watermark
+            victims = heapq.nsmallest(excess, self.flows.items(), key=lambda kv: kv[1].last_ts)
+            for k, _ in victims:
+                del self.flows[k]
+            self.evicted_overflow += len(victims)
 
     def active(self) -> Iterator[FlowRecord]:
         return iter(self.flows.values())

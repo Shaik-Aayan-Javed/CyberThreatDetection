@@ -68,6 +68,23 @@ class SynFloodDetector(Detector):
             top_src = tf.src_counts.most_common(1)[0][0] if tf.src_counts else "unknown"
             spoofed = tf.unique_sources > 20 and spread > 0.85
 
+            # Explain where the threshold came from. On most links the median
+            # target receives no SYNs at all, so the learned baseline is
+            # genuinely ~0 and the absolute floor is what gates -- say so
+            # plainly rather than printing a near-zero number or the
+            # divide-by-zero epsilon, neither of which means anything.
+            if base_rate * RATE_MULTIPLIER < MIN_SYN_RATE:
+                if base_rate < 1e-3:
+                    rate_note = (f"median target sees no SYN traffic, so the "
+                                 f"{MIN_SYN_RATE:.0f}/s absolute floor set the threshold")
+                else:
+                    rate_note = (f"learned baseline {base_rate:.3g}/s x {RATE_MULTIPLIER} "
+                                 f"is under the {MIN_SYN_RATE:.0f}/s floor, which set "
+                                 f"the threshold")
+            else:
+                rate_note = (f"{RATE_MULTIPLIER}x learned baseline "
+                             f"{base_rate:.3g}/s = {threshold:.1f}/s")
+
             alerts.append(
                 Alert.build(
                     threat_class=self.threat_class,
@@ -79,8 +96,12 @@ class SynFloodDetector(Detector):
                     window_start=wf.window.start,
                     window_end=wf.window.end,
                     evidence=[
-                        Evidence("syn_rate_pps", syn_rate, base_rate, "pkt/s",
-                                 f"{RATE_MULTIPLIER}x baseline threshold = {threshold:.1f}"),
+                        # Report the threshold that actually gated, not the raw
+                        # baseline: on a link where the median target receives
+                        # no SYNs at all the learned baseline is legitimately
+                        # ~0, and printing that (or the divide-by-zero epsilon)
+                        # tells an analyst nothing about why this fired.
+                        Evidence("syn_rate_pps", syn_rate, threshold, "pkt/s", rate_note),
                         Evidence("syn_packets_in_window", tf.syn_in, None, "packets"),
                         Evidence("completion_ratio", completion, 1.0, "",
                                  f"{tf.synack_out} SYN/ACK observed for {tf.syn_in} SYN"),
