@@ -5,7 +5,7 @@ been run end-to-end on the demo machine; nothing is typed for the first time in
 front of a judge.
 
 **Before the room:** `python tools/selftest.py` — if it does not print
-`ALL 19 CHECKS PASSED`, fix that before anything else. Have two terminals open at
+`ALL 20 CHECKS PASSED`, fix that before anything else. Have two terminals open at
 the repo root with `.venv` active, and a browser at `http://127.0.0.1:8000`
 already loaded but not started.
 
@@ -133,7 +133,7 @@ Three layers scroll past. Narrate:
 > "One: every module in the detection path is AST-parsed and rejected if it
 > imports a networking library. AST, not grep, so `import socket as s` is caught
 > too. Two: we replay a real capture with `socket.socket` replaced by a class
-> that raises on construction — 52,786 packets, 8 alerts, no socket created.
+> that raises on construction — 64,786 packets, 9 alerts, no socket created.
 > Three: we wrap `open` for a whole run and the only file touched is the capture,
 > mode `rb`."
 
@@ -158,19 +158,26 @@ two minutes.
 
 Show `docs/throughput.json` rather than running the benchmark live:
 
-> "19,060 packets per second, 50.4 Mbit, median of three runs, full pipeline with
-> the model loaded. That is 109× real time on one core of a laptop. The PS asks
-> for measured throughput on stated hardware — that is the hardware, and that is
-> our number."
+> "Tens of thousands of packets per second, tens of megabits, median of three
+> runs, full pipeline with the model loaded — comfortably above real time on
+> one core of a laptop. The PS asks for measured throughput on stated
+> hardware — that is the hardware, and that is our number. If asked for the
+> exact multiple: check `docs/throughput.json` on the machine you're running,
+> since it moves with what else is running on the box that day — re-run it
+> live if a judge wants a number measured in front of them, not read off a
+> file."
 
 ## 11. What we did not build, and why (45 s)
 
 Do not let this be dragged out of you:
 
-> "Four of the six threat classes complete, one partial, one absent — and I want
-> to be precise about which. Class (a) names three shapes: SYN floods and
-> spoofed floods we do, UDP reflection and amplification we do not. Class (d),
-> malware in encrypted sessions, is not built at all.
+> "Five of the six threat classes complete, one absent — and I want to be
+> precise about which. Class (a) names three shapes: SYN floods, spoofed
+> floods, and UDP reflection/amplification. All three now fire — amplification
+> is read at the victim, since a one-way tap only ever sees the
+> reflector-to-victim leg, never the spoofed attacker-to-reflector leg, which
+> never crosses this link anyway. Class (d), malware in encrypted sessions, is
+> the one gap, and it's not built at all.
 >
 > One thing I want to correct before you ask it: (d) does *not* require
 > decryption. It asks for JA3 fingerprints and packet-size sequences from
@@ -186,7 +193,7 @@ Volunteering the gaps is what makes the rest of the numbers credible.
 
 ## 12. The one-line close (15 s)
 
-> "Streaming pipeline, five detectors and an unsupervised model, alerts that
+> "Streaming pipeline, six detectors and an unsupervised model, alerts that
 > explain themselves, and an isolation constraint we prove four ways instead of
 > asserting. Three days, and every number on these slides came from a run you
 > can reproduce with a seed."
@@ -210,9 +217,10 @@ likely to survive contact are SYN flood and port scan; the parts most likely to
 need work are the DNS bigram corpus and the beacon jitter tolerance.
 
 **"You claim six threat classes — do you?"**
-No, and the README says so. Four complete, one partial, one absent. Class (a)
-covers SYN and spoofed floods but not UDP amplification; class (d) is not built.
-We would rather be counted at four-and-a-half honestly than six on a claim that
+No, and the README says so. Five complete, one absent. Class (a) now covers
+all three of its named shapes — SYN floods, spoofed floods, and UDP
+reflection/amplification; class (d), malware in encrypted sessions, is not
+built. We would rather be counted at five honestly than six on a claim that
 does not survive someone opening `detectors/`.
 
 **"Are there known bugs?"**

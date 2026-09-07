@@ -6,40 +6,43 @@ a measured number from `docs/metrics.json`, `docs/throughput.json` or
 `docs/model_report.json`.
 
 **Summary:** all five architectural constraints are met, one of them
-substantially exceeded. Of the six threat classes, **four are complete, one is
-partial, and one is absent.**
+substantially exceeded. Of the six threat classes, **five are complete, one is
+absent.**
 
 ---
 
 ## 1. Threat classes
 
-### (a) Volumetric / protocol DDoS — **PARTIAL**
+### (a) Volumetric / protocol DDoS — **COMPLETE**
 
 > *"SYN floods, UDP reflection/amplification, and spoofed-source floods
 > identified from flow-level rate and source-IP entropy statistics."*
 
-Three named shapes; two implemented.
+Three named shapes; all three implemented.
 
 | Shape | Status | Detail |
 |---|---|---|
 | SYN floods | **Yes** | `detectors/synflood.py:43-56`. SYN rate against a learned target baseline (≥ 6×, floor 50/s), completion ratio ≤ 0.30. Measured on `synflood.pcap`: 1,500 SYN/s against a 50/s threshold, completion 0.0, 7,500 unique sources. |
 | Spoofed-source floods | **Yes** | Source-IP Shannon entropy over the target's source distribution, normalised by `log2(unique_sources)` — `synflood.py:55-56`. Measured 12.87 bits across 7,500 sources. Feeds confidence at `:61`. |
-| UDP reflection / amplification | **No** | Not implemented, and not currently measurable — see below. |
+| UDP reflection / amplification | **Yes** | `detectors/udpamp.py`. Aggregate inbound byte rate across a fixed 9-port reflector allowlist (DNS/NTP/SSDP/memcached/CharGen/QOTD/SNMP/Portmapper/CLDAP) against a learned target baseline (≥ 6×, floor 400,000 B/s), gated jointly on ≥ 3 distinct reflector IPs. Measured on `udp_amp.pcap`: 753,600 B/s against a 400,000 B/s floor, 4,000 distinct reflectors, 3,768,000 B total on NTP/123. |
 
-**Why amplification is absent, precisely.** Three layers would each need work:
-
-1. `detectors/synflood.py:43` gates on `tf.syn_in`, which is incremented only
-   inside the TCP branch of `features/extract.py:186-189`. A pure UDP flood has
-   `syn_in == 0` and is skipped before any other test runs.
-2. No detector reads `sport`. It is parsed (`ingest/reader.py:37,102,109`) but
-   used only for flow keying (`ingest/flows.py:80,91-98`), so "responses from
-   source port 53/123/11211 converging on a victim" is invisible.
-3. The amplification factor is still **unrepresentable**, though partially less
-   so: the reader now records `dns_answers` (an answer count) instead of
-   discarding DNS responses outright. But `TargetFeatures` has no `udp_bytes_in`
-   and no per-service-port byte breakdown, so there is still no request:response
-   *size* pair anywhere in the feature set to threshold. See
-   `docs/DEFECTS.md` #21.
+**How amplification is detected, precisely.** Read at the victim
+(`TargetFeatures`), not the reflector or the attacker — a one-way tap can only
+ever see the reflector→victim leg, since the attacker→reflector leg is
+external-to-external and (in a real attack) carries the victim's spoofed
+address, so it never crosses this link. `features/extract.py`'s UDP branch
+now accumulates `amp_bytes_by_port` and `amp_reflectors_by_port` whenever a
+packet's *source* port matches the reflector allowlist — i.e. a response
+landing on the victim, not a request to the victim's own service.
+`detectors/udpamp.py` gates on the **aggregate** rate across all tracked
+ports, not per-port, because a real campaign is routinely multi-vector
+(DNS+NTP+SSDP at once, specifically to dodge single-protocol thresholds); a
+corroborating (non-gating) amplification-ratio signal compares that volume
+against the victim's own total outbound bytes that window, which is usually
+zero — the victim never asked for any of this. See `docs/DEFECTS.md` #21
+(fixed) for the full derivation, including the accepted gap: a 1-2-reflector
+attack using very high-potency amplifiers can clear the byte-rate gate
+without reaching the minimum-reflector-count gate.
 
 **One honest qualification on spoofing.** The `spoofed` flag at `synflood.py:69`
 is a *label*, not a gate: it selects the wording of one evidence note
@@ -142,9 +145,9 @@ Proven four ways rather than asserted, via `tools/isolation_check.py`:
    detectors/ alerts/ engine.py`) is AST-parsed and rejected if it imports a
    networking or subprocess library or calls `connect`/`send`/`urlopen`/`popen`.
    AST rather than grep, so `import socket as s` and `from socket import *` are
-   caught. Result: 17/17 files clean.
+   caught. Result: 18/18 files clean.
 2. **Runtime** — a real capture replayed with `socket.socket` replaced by a
-   subclass that raises on construction. 52,786 packets, 8 alerts, model loaded,
+   subclass that raises on construction. 64,786 packets, 9 alerts, model loaded,
    no socket created.
 3. **File access** — `builtins.open` wrapped for a full run; the only file
    opened is the capture, mode `rb`.
@@ -192,12 +195,18 @@ loaded:
 
 | Capture | packets/s | Mbit/s | flows/s | vs real time |
 |---|---|---|---|---|
-| `mixed.pcap` | 19,060 | 50.4 | 11,597 | 109× |
-| `synflood.pcap` | 18,867 | 37.9 | 12,620 | 120× |
+| `mixed.pcap` | 14,959 | 53.1 | 10,187 | 69× |
+| `synflood.pcap` | 12,737 | 25.6 | 8,520 | 81× |
 
 Hardware stated: `Intel64 Family 6 Model 170` (Meteor Lake), 18 logical cores,
 Windows 11, CPython 3.13, single process, no GPU. The PS asks for "flows/sec or
 Mbps"; both are given.
+
+*Measured on a dev machine with other applications running; three consecutive
+runs of `bench/throughput.py` during this pass produced real-time multiples
+from 33× to 91× on the same two captures, so treat this table as "comfortably
+above real time" rather than a precise headline number until re-measured on
+an idle machine.*
 
 ### (e) Standardised alert schema — **MET**
 
@@ -244,7 +253,7 @@ vice versa; neither alone is sufficient.
 
 ## 5. Detection performance
 
-Per-class precision / recall / F1 = 1.00 across all five implemented classes,
+Per-class precision / recall / F1 = 1.00 across all six implemented classes,
 macro-F1 1.00, and **0 false positives** on 16,701 packets of benign traffic.
 
 **These numbers must be read with their caveat.** We authored the captures and
@@ -257,12 +266,12 @@ otherwise, not field accuracy.
 
 ## 6. Scope boundaries
 
-**Not built, deliberately:** TLS/QUIC metadata analysis (class d); UDP
-reflection/amplification (part of class a); payload decryption (out of scope per
-constraint b); active probing (violates the passive constraint, absence proven
-mechanically); automated blocking (needs a return path that does not exist);
-supervised classification (no labelled attack data obtainable in this deployment
-model); deep learning on raw bytes (no labels, no explainability).
+**Not built, deliberately:** TLS/QUIC metadata analysis (class d); payload
+decryption (out of scope per constraint b); active probing (violates the
+passive constraint, absence proven mechanically); automated blocking (needs a
+return path that does not exist); supervised classification (no labelled
+attack data obtainable in this deployment model); deep learning on raw bytes
+(no labels, no explainability).
 
 **Ingest breadth.** PCAP/PCAPNG files only. The PS *background* mentions
 NetFlow/IPFIX/sFlow among what an enclave can observe, but this appears in

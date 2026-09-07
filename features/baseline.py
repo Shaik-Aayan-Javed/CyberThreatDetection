@@ -77,6 +77,7 @@ class BaselineTracker:
         # name: (ewma alpha, warm-up floor)
         "syn_rate": (0.05, 20.0),
         "target_syn_rate": (0.05, 0.5),
+        "udp_amp_bytes_in": (0.05, 2000.0),
         "pps": (0.05, 50.0),
         "bps": (0.05, 1e5),
         "host_fanout_ports": (0.01, 2.0),

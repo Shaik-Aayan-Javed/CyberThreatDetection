@@ -31,6 +31,7 @@ from detectors.dns import DnsAnomalyDetector
 from detectors.exfil import ExfilDetector
 from detectors.portscan import PortScanDetector
 from detectors.synflood import SynFloodDetector
+from detectors.udpamp import UdpAmplificationDetector
 from features.baseline import BaselineTracker
 from features.extract import WindowFeatures, extract
 from ingest.flows import FlowTable, Windower
@@ -87,6 +88,7 @@ def build_detectors(model_path: str | None = DEFAULT_MODEL_PATH,
                     enable_anomaly: bool = True) -> list[Detector]:
     detectors: list[Detector] = [
         SynFloodDetector(),
+        UdpAmplificationDetector(),
         PortScanDetector(),
         BeaconDetector(),
         DnsAnomalyDetector(),
@@ -112,6 +114,8 @@ def update_baselines(wf: WindowFeatures, baselines: BaselineTracker) -> None:
     if wf.by_dst:
         syn_rates = [tf.syn_in / wf.duration for tf in wf.by_dst.values()]
         baselines.observe("target_syn_rate", statistics.median(syn_rates))
+        amp_rates = [sum(tf.amp_bytes_by_port.values()) / wf.duration for tf in wf.by_dst.values()]
+        baselines.observe("udp_amp_bytes_in", statistics.median(amp_rates))
 
     # Only hosts we actually watched transmit. wf.by_host also holds rows for
     # pure destinations -- created solely to carry inbound byte counts -- whose

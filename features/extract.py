@@ -26,6 +26,17 @@ from ingest.reader import Packet
 # negative value as "no data" rather than comparing it as a ratio.
 NO_COMPLETION_DATA = -1.0
 
+# Well-known UDP services with a large amplification factor: DNS, NTP, SSDP,
+# memcached, CharGen, QOTD, SNMP, Portmapper, CLDAP. Fixed and small on
+# purpose -- any new per-target state has to stay bounded by construction,
+# not by a runtime cap, after docs/DEFECTS.md #1's unbounded-flow-table OOM.
+AMPLIFICATION_PORTS = {53, 123, 1900, 11211, 19, 17, 161, 111, 389}
+# Per-port cap on distinct reflector IPs tracked in one window. A window's
+# state is discarded on the next extract() call regardless, but a single
+# pathological window (the attack this detector exists to catch) could still
+# spike memory before that reset -- this bounds that spike.
+MAX_REFLECTORS_TRACKED = 20_000
+
 
 def shannon_entropy(counts) -> float:
     """Shannon entropy in bits over a Counter or iterable of counts.
@@ -137,6 +148,13 @@ class TargetFeatures:
     src_counts: Counter = field(default_factory=Counter)
     dports: Counter = field(default_factory=Counter)
     udp_in: int = 0
+    udp_bytes_in: int = 0
+    # Inbound bytes/reflector-IPs keyed by SOURCE port, only when that port is
+    # in AMPLIFICATION_PORTS -- i.e. a response landing on this host from a
+    # well-known reflector service, not a request to this host's own service.
+    # Bounded to a 9-key outer space; see AMPLIFICATION_PORTS/MAX_REFLECTORS_TRACKED.
+    amp_bytes_by_port: Counter = field(default_factory=Counter)
+    amp_reflectors_by_port: dict[int, set[str]] = field(default_factory=dict)
 
     @property
     def unique_sources(self) -> int:
@@ -251,6 +269,12 @@ def extract(window: Window) -> WindowFeatures:
             src.udp += 1
             src.dst_ports.add(pkt.dport)
             dst.udp_in += 1
+            dst.udp_bytes_in += pkt.length
+            if pkt.sport in AMPLIFICATION_PORTS:
+                dst.amp_bytes_by_port[pkt.sport] += pkt.length
+                refl = dst.amp_reflectors_by_port.setdefault(pkt.sport, set())
+                if len(refl) < MAX_REFLECTORS_TRACKED:
+                    refl.add(pkt.src)
             dst.dports[pkt.dport] += 1
             if pkt.dport != 53:
                 src.contacts.append((pkt.dst, pkt.dport, pkt.ts, pkt.length))

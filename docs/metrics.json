@@ -44,6 +44,15 @@
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
+    },
+    "UDP_AMPLIFICATION": {
+      "tp": 2,
+      "fp": 0,
+      "episodes": 2,
+      "detected": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
     }
   },
   "captures": {
@@ -89,17 +98,24 @@
       "anomaly_alerts": 0,
       "matched_alerts": 1
     },
-    "mixed.pcap": {
-      "packets": 52786,
-      "episodes": 5,
-      "rule_alerts": 7,
+    "udp_amp.pcap": {
+      "packets": 28930,
+      "episodes": 1,
+      "rule_alerts": 1,
       "anomaly_alerts": 1,
-      "matched_alerts": 7
+      "matched_alerts": 1
+    },
+    "mixed.pcap": {
+      "packets": 64786,
+      "episodes": 6,
+      "rule_alerts": 8,
+      "anomaly_alerts": 1,
+      "matched_alerts": 8
     }
   },
   "benign_false_positives": 0,
   "anomaly_channel": {
-    "total_alerts": 2,
+    "total_alerts": 3,
     "on_labelled_attacker": 2,
     "note": "unsupervised channel; excluded from the class table by design"
   },
@@ -130,6 +146,11 @@
       "latency_s": 45.0
     },
     {
+      "capture": "udp_amp.pcap",
+      "threat_class": "UDP_AMPLIFICATION",
+      "latency_s": 5.0
+    },
+    {
       "capture": "mixed.pcap",
       "threat_class": "SYN_FLOOD",
       "latency_s": 5.0
@@ -153,6 +174,11 @@
       "capture": "mixed.pcap",
       "threat_class": "EXFIL",
       "latency_s": 45.0
+    },
+    {
+      "capture": "mixed.pcap",
+      "threat_class": "UDP_AMPLIFICATION",
+      "latency_s": 5.0
     }
   ],
   "macro": {

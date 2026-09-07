@@ -7,7 +7,7 @@ reviewer to find.
 Line references are to modules and functions rather than absolute line numbers,
 because several of these have been fixed and the numbers have moved.
 
-**Status summary — 7 fixed, 16 open.**
+**Status summary — 8 fixed, 15 open.**
 
 | # | Defect | Layer | Severity | Status |
 |---|---|---|---|---|
@@ -23,7 +23,7 @@ because several of these have been fixed and the numbers have moved.
 | 10 | Windower files packets into the wrong window after a gap | ingest | High | Open |
 | 11 | No fragment reassembly, no tunnel decap, ICMPv6 misclassified | ingest | High | Open |
 | 12 | `split_domain` over-merges unlisted public suffixes | detectors | High | Open |
-| 13 | SYN flood detector cannot fire on non-TCP floods | detectors | High | Open |
+| 13 | SYN flood detector cannot fire on non-TCP floods | detectors | High | Open — narrowed |
 | 14 | `flush()` gives the trailing window a non-nominal duration | ingest | Medium | Open |
 | 15 | Empty windows are never emitted | ingest | Medium | Open |
 | 16 | `malformed` conflates "not IP" with "corrupt" | ingest | Medium | Open |
@@ -31,7 +31,7 @@ because several of these have been fixed and the numbers have moved.
 | 18 | Blanket `except Exception` hides parser bugs | ingest | Medium | Open |
 | 19 | Flow expiry driven by capture time only | ingest | Medium | Open |
 | 20 | Four baselines declared but never observed | features | Medium | Open |
-| 21 | Amplification ratio is unrepresentable | features | Medium | Open |
+| 21 | Amplification ratio is unrepresentable | features | Medium | **Fixed** |
 | 22 | DGA and tunnelling indistinguishable to a machine | detectors | Medium | Open |
 | 23 | `spoofed` is a label, not a gate | detectors | Medium | Open |
 
@@ -200,6 +200,66 @@ and a joined `"a.com;b.com"` parses to the nonsense parent `"com;b.com"` —
 corrupting the detector to record a case (qdcount > 1) that most resolvers
 reject outright.
 
+### 21. Amplification ratio was unrepresentable *(Medium)*
+
+**What.** `TargetFeatures` counted UDP packets but had no `udp_bytes_in` and no
+per-service-port byte breakdown. Defect 8's fix retained an answer *count*
+(`dns_answers`), but that was a packet count, not a byte total, and nothing
+read it — there was no request/response *size* pairing anywhere in the
+feature layer to threshold, so PS class (a)'s third named shape (UDP
+reflection/amplification) had no detector and no way to build one.
+
+**Why.** `features/extract.py`'s UDP branch had no port-scoped byte
+accounting at all — every UDP packet, reflection response or not, simply
+incremented a flat `udp_in` counter with no way to distinguish "a big DNS
+response landed on this host" from any other UDP traffic.
+
+**Impact.** PS class (a) was stuck at 2 of 3 named shapes regardless of how
+well-tuned the SYN-flood detector was — the gap was structural, not a
+threshold-tuning problem.
+
+**Fix (applied).** `features/extract.py` gained a fixed 9-port reflector
+allowlist (`AMPLIFICATION_PORTS`: DNS/NTP/SSDP/memcached/CharGen/QOTD/SNMP/
+Portmapper/CLDAP) and two new `TargetFeatures` fields —
+`amp_bytes_by_port: Counter` and `amp_reflectors_by_port: dict[int, set[str]]`
+— populated only when a packet's *source* port matches the allowlist (a
+response landing on the victim, not a request to the victim's own service).
+A new `detectors/udpamp.py` gates on the **aggregate** rate across all
+tracked ports against a learned baseline (`udp_amp_bytes_in`, floor
+400,000 B/s), jointly with a minimum-distinct-reflector-count gate
+(`MIN_REFLECTORS = 3`) — the cardinality gate is load-bearing, not
+defense-in-depth: `gen_normal`'s traffic gives every client exactly one
+legitimate DNS resolver (`reflector_count == 1`), so it alone is what keeps
+`normal.pcap` at zero false positives. Gating on the aggregate rather than
+per-port matters because a real campaign is routinely multi-vector
+(DNS+NTP+SSDP at once), specifically to dodge single-protocol thresholds.
+
+The per-target reflector-IP set is capped at `MAX_REFLECTORS_TRACKED =
+20,000` per port, enforced at insertion — not because state persists across
+windows (`TargetFeatures` is rebuilt empty every window, same as everything
+else in `WindowFeatures`), but because a single pathological window, during
+exactly the attack this detector exists to catch, could otherwise spike
+memory before that reset ever happens.
+
+Verified on a synthetic capture (`udp_amp.pcap`, `data/generate.py`'s
+`gen_udp_amplification()`, NTP/123 chosen over DNS/53 to avoid needless
+coupling to `_attach_dns()`): 800 pkt/s of ~900-byte reflected responses from
+distinct external IPs into one internal victim fires `UDP_AMPLIFICATION` at
+`CRITICAL` severity, confidence 0.99 — measured `amp_bytes_rate` 753,600 B/s
+against the 400,000 B/s floor, 4,000 distinct reflectors, 3,768,000 B total.
+Precision/recall/F1 = 1.000/1.000/1.000 in `docs/metrics.json`. `normal.pcap`
+stays at zero false positives.
+
+*Scoped, not complete.* Per the note above ("on a one-way tap you may only
+see the amplified half"), this detector is read entirely at the victim — the
+attacker→reflector leg is external-to-external and spoofed, so it never
+crosses this tap and isn't attempted. And a 1-2-reflector attack using very
+high-potency amplifiers (e.g. open memcached, >10,000×) can clear the
+byte-rate gate without reaching `MIN_REFLECTORS` — an accepted gap, stated
+in the detector's own docstring rather than silently shipped. See defect 13
+for the remaining, narrower gap this does *not* close: generic non-reflection
+UDP/ICMP floods.
+
 ---
 
 ## Open
@@ -275,13 +335,21 @@ but absent from the suffix list — the two disagree.)
 **Fix.** Vendor a Public Suffix List snapshot and take the registrable domain.
 Costs a dependency or a ~230 KB data file in an intentionally-inspectable MVP.
 
-### 13. SYN flood detector cannot fire on non-TCP floods *(High)*
+### 13. SYN flood detector cannot fire on non-TCP floods *(High — narrowed)*
 The `tf.syn_in < MIN_SYN_COUNT` gate runs before any rate test, and `syn_in` is
-incremented only in the TCP branch, so UDP and ICMP floods are structurally
-undetectable. No other detector backstops it. This is the PS class (a) gap.
-**Fix.** Generalise the gate to a protocol-agnostic inbound-rate test and split
-`UDP_FLOOD` into its own class, omitting completion ratio (meaningless for UDP).
-Real amplification additionally needs defect 21.
+incremented only in the TCP branch, so `SynFloodDetector` itself is
+structurally blind to UDP and ICMP floods. This was originally the whole PS
+class (a) gap; it no longer is. **`UdpAmplificationDetector`
+(`detectors/udpamp.py`) now backstops the specific named shape** — UDP
+reflection/amplification on a fixed reflector-port allowlist, gated on
+aggregate byte rate plus distinct-reflector cardinality (see defect 21,
+fixed). What remains open is narrower: a **generic**, non-reflection UDP or
+ICMP flood — garbage packets at high rate with no amplification-port
+signature and no SYN — is still invisible, since no detector reads inbound
+rate in a protocol-agnostic way.
+**Fix.** Generalise the gate to a protocol-agnostic inbound-rate test and
+split `UDP_FLOOD` into its own class, omitting completion ratio (meaningless
+for UDP). Distinct from amplification, which is now handled.
 
 ### 14. `flush()` gives the trailing window a non-nominal duration *(Medium)*
 `flush()` rewrites `w.end` to the last packet's timestamp, so the final window's
@@ -345,17 +413,6 @@ so dict literals are displayed to an operator as observations of the link.
 **Fix.** Delete them, or wire them. `src_entropy` is the highest value: it would
 let the SYN flood detector say "entropy 7.2 bits vs a learned 1.4" instead of an
 unanchored number.
-
-### 21. Amplification ratio is unrepresentable *(Medium — partially addressed)*
-`TargetFeatures` counts UDP packets but has no `udp_bytes_in` and no
-per-service-port byte breakdown. Defect 8's fix retains an answer *count*
-(`dns_answers`) instead of discarding DNS responses outright, but that is a
-packet count, not a byte total, and nothing reads it yet — there is still no
-request/response *size* pairing anywhere in the feature layer.
-**Fix.** Add `bytes_in_by_port` and `udp_bytes_in`, wire `dns_answers` into a
-byte-aware equivalent, then a detector comparing per-port inbound volume against
-outbound request volume. On a one-way tap you may only see the amplified half,
-so scope the claim to "reflection observed at the victim".
 
 ### 22. DGA and tunnelling indistinguishable to a machine *(Medium)*
 Both emit `threat_class = DNS_ANOMALY` with identical evidence field names and

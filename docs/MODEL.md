@@ -3,7 +3,7 @@
 PS 26145 asks for documentation of the models used, the features engineered, and
 the training/validation approach. This is that document.
 
-The short version: **five transparent behavioural detectors carry the detection
+The short version: **six transparent behavioural detectors carry the detection
 load, and one unsupervised model provides corroboration and open-ended anomaly
 coverage.** We did not train a network to read packets, and we do not claim to
 have. What follows is what the system actually does.
@@ -29,7 +29,7 @@ re-contacting the network. The first cannot.
 
 ---
 
-## 2. The five behavioural detectors
+## 2. The six behavioural detectors
 
 Each is a small, readable function over per-window features. Thresholds are
 expressed as multiples of a **learned** baseline, not as fixed constants,
@@ -38,6 +38,7 @@ because "3,000 SYN/s is abnormal" is only true on some links.
 | Detector | Module | Primary signal | Secondary signals |
 |---|---|---|---|
 | SYN flood / DDoS | `detectors/synflood.py` | SYN rate at a target vs learned baseline | observed completion ratio, source-IP Shannon entropy, unique source count |
+| UDP reflection / amplification | `detectors/udpamp.py` | aggregate inbound byte rate on reflector ports vs learned baseline | distinct-reflector count, per-port breakdown, amplification ratio vs outbound |
 | Port scan / recon | `detectors/portscan.py` | port + host fan-out from one source | completion ratio, sequential-port run ratio, connection rate |
 | C2 beaconing | `detectors/beacon.py` | coefficient of variation of inter-arrival times | contact count, packet-size stability, persistence |
 | DGA / DNS tunnelling | `detectors/dns.py` | QNAME character entropy + bigram plausibility | unique subdomain count, label length, TXT/NULL ratio |
@@ -288,7 +289,6 @@ Behavioural evidence stays primary — see `engine.run()`.
 | LLM-based packet analysis | Wrong tool. Adds latency and cost to a problem solved by counting. |
 | TLS/QUIC decryption | Explicitly out of scope (PS constraint b). Not implemented at any layer. |
 | **TLS/QUIC *metadata* analysis (PS class d)** | **Not built — and constraint (b) is not the reason.** See the note below; conflating these two is a misreading of the PS. |
-| **UDP reflection/amplification (part of PS class a)** | Not built. Also currently unmeasurable: UDP bytes are not accumulated per target and DNS answers are discarded at `ingest/reader.py:134`. |
 | Active probing / scanning | Violates the passive constraint. `tools/isolation_check.py` proves absence mechanically. |
 | Automated blocking | Requires a return path that does not exist. |
 | Supervised threat classifier | No labelled attack data is obtainable in this deployment model. |

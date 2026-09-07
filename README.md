@@ -5,7 +5,7 @@ copied one-way into a monitoring enclave.
 
 A gateway link is mirrored into an enclave that can see every packet and has no
 route back. This prototype turns that one-way stream into explained alerts:
-five behavioural detectors plus an unsupervised anomaly model, running as a
+six behavioural detectors plus an unsupervised anomaly model, running as a
 streaming pipeline, with the isolation constraint proven mechanically rather
 than asserted on a slide.
 
@@ -13,7 +13,7 @@ than asserted on a slide.
 py -3.13 -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 
-python data/generate.py --seed 42      # 7 labelled captures, 190,363 packets
+python data/generate.py --seed 42      # 8 labelled captures, 231,293 packets
 python train.py                        # fit + calibrate + validate the model
 python engine.py data/pcaps/mixed.pcap --pretty
 python server.py                       # then open http://127.0.0.1:8000
@@ -23,9 +23,9 @@ python server.py                       # then open http://127.0.0.1:8000
 
 ## What it detects
 
-Measured against the PS threat list clause by clause: **four classes complete,
-one partial, one absent.** The per-class breakdown and the evidence for each
-verdict are in [docs/CONFORMANCE.md](docs/CONFORMANCE.md).
+Measured against the PS threat list clause by clause: **five classes complete,
+one absent.** The per-class breakdown and the evidence for each verdict are in
+[docs/CONFORMANCE.md](docs/CONFORMANCE.md).
 
 Each detector fires on a distinct behavioural signal. Thresholds are multiples
 of a **learned** EWMA baseline — with the caveat that each baseline is floored
@@ -39,18 +39,21 @@ floor is what is actually in effect.
 | `C2_BEACON` | coefficient of variation of inter-arrival times — scale-free, so one threshold catches a 20s and a 300s beacon | `detectors/beacon.py` |
 | `DNS_ANOMALY` | QNAME character entropy + bigram plausibility against a real-domain corpus, label length, TXT/NULL ratio — over UDP/53, TCP/53, mDNS, and LLMNR | `detectors/dns.py` |
 | `EXFIL` | outbound:inbound byte ratio to a single destination, sustained | `detectors/exfil.py` |
+| `UDP_AMPLIFICATION` | aggregate inbound byte rate on known reflector ports (DNS/NTP/SSDP/memcached/...) vs baseline, plus distinct-reflector cardinality | `detectors/udpamp.py` |
 | `ANOMALOUS_FLOW` | IsolationForest on 10 per-host features, trained on benign traffic only | `detectors/anomaly.py` |
 
-**Two gaps, stated plainly:**
+**One gap, stated plainly:**
 
-**PS class (a) is partial.** It names three attack shapes — SYN floods, spoofed
-floods, and *UDP reflection/amplification*. We implement the first two. A pure
-UDP flood cannot fire at all, because `detectors/synflood.py:43` gates on a TCP
-SYN counter. Amplification is still unmeasurable, though less so than it was:
-the reader now records an answer *count* (`dns_answers`) rather than discarding
-DNS responses outright, but `TargetFeatures` still has no `udp_bytes_in` and no
-per-service-port byte breakdown, so there is no request:response *size* ratio
-to threshold. See `docs/DEFECTS.md` #21.
+**PS class (a) is now complete.** It names three attack shapes — SYN floods,
+spoofed floods, and UDP reflection/amplification — and all three are now
+detected. Amplification is read at the victim (`TargetFeatures`), since on a
+one-way tap the attacker→reflector leg is invisible by construction (both ends
+are external and spoofed, so it never crosses this link) — only the
+reflector→victim leg can be observed, which is exactly what
+`detectors/udpamp.py` gates on: aggregate inbound bytes across a fixed
+allowlist of reflector ports, plus a minimum distinct-reflector count so one
+legitimate DNS resolver never looks like an attack. See `docs/DEFECTS.md` #21
+(fixed) for the full writeup.
 
 **PS class (d) — malware in encrypted sessions — is not built.** Note what it
 actually asks for: detection from TLS/QUIC *metadata alone* (JA3/JA3S/JA4,
@@ -67,7 +70,7 @@ All numbers below come from `tools/selftest.py`, `bench/metrics.py` and
 `bench/throughput.py` on this machine. Nothing here is illustrative.
 
 **Detection** (`docs/metrics.json`) — per-class precision / recall / F1 = 1.00
-across all five *implemented* classes, macro-F1 **1.00**, and:
+across all six *implemented* classes, macro-F1 **1.00**, and:
 
 ```
 false positives on 16,701 packets of purely benign traffic:  0
@@ -81,23 +84,32 @@ zero-FP claim against synthetic benign traffic is a sanity check, not evidence
 of a low false-alarm rate in the field.
 
 **Detection latency**, first alert after attack onset: 5 s for `SYN_FLOOD`,
-`PORT_SCAN`, `DNS_ANOMALY` (one window), 45 s for `EXFIL`, 140 s for
-`C2_BEACON`. The slow two are inherent — a beacon is not a beacon until enough
-intervals exist to measure regularity, and calling it earlier would mean calling
-it on two packets.
+`PORT_SCAN`, `DNS_ANOMALY`, `UDP_AMPLIFICATION` (one window), 45 s for `EXFIL`,
+140 s for `C2_BEACON`. The slow two are inherent — a beacon is not a beacon
+until enough intervals exist to measure regularity, and calling it earlier
+would mean calling it on two packets.
 
 **Throughput** (`docs/throughput.json`), median of 3 runs, full pipeline with
 the anomaly model loaded:
 
 | Capture | packets/s | Mbit/s | flows/s | vs real time |
 |---|---|---|---|---|
-| `mixed.pcap` | 19,060 | 50.4 | 11,597 | **109×** |
-| `synflood.pcap` | 18,867 | 37.9 | 12,620 | 120× |
+| `mixed.pcap` | 14,959 | 53.1 | 10,187 | **69×** |
+| `synflood.pcap` | 12,737 | 25.6 | 8,520 | 81× |
 
 Hardware: `Intel64 Family 6 Model 170` (Meteor Lake), 18 logical cores,
 Windows 11, CPython 3.13 — single process, one core doing the work, no GPU.
-109× real time means one core keeps up with a link carrying this traffic mix
-with two orders of magnitude of headroom.
+
+**Caveat on these two figures specifically**: measured on a dev machine with
+other applications running, and re-running `bench/throughput.py` three times
+in a row during this pass produced real-time multiples ranging from 33× to
+91× for the same two captures — too wide a spread to attribute confidently to
+the sixth detector rather than run-to-run system load (`UdpAmplificationDetector.on_window`
+is structurally a single pass over `wf.by_dst`, the same shape as
+`SynFloodDetector`'s, but that is a code-reading argument, not a profiled
+one). Treat this table as "still comfortably above real time," not as a
+precise headline number — re-measure on an idle machine before quoting a
+specific multiple with confidence.
 
 **Model** (`docs/model_report.json`): IsolationForest, 200 trees, 10 features,
 trained on 256 benign windows, never on an attack. Mean ROC-AUC **0.997** across
@@ -122,10 +134,10 @@ the model and where the model genuinely fails.
    │  5s window  │   features/baseline.py  EWMA baselines, winsorized
    └──────┬──────┘
           ▼
-   ┌───────────────────────────────────────────────┐
-   │ synflood  portscan  beacon  dns  exfil        │  rules → evidence
-   │ anomaly (IsolationForest)                     │  model → corroboration
-   └──────┬────────────────────────────────────────┘
+   ┌────────────────────────────────────────────────┐
+   │ synflood  udpamp  portscan  beacon  dns  exfil │  rules → evidence
+   │ anomaly (IsolationForest)                      │  model → corroboration
+   └──────┬─────────────────────────────────────────┘
           ▼
    ┌─────────────┐   alerts/schema.py     confidence computed from evidence
    │   Alert     │───► stdout JSON
@@ -189,7 +201,7 @@ python tools/isolation_check.py
    or calls `connect`/`send`/`urlopen`/`popen`. AST, not grep: `import socket as
    s` and `from socket import *` are caught too.
 2. **Runtime** — a real capture is replayed with `socket.socket` replaced by a
-   subclass whose constructor raises. 52,786 packets, 8 alerts, no socket
+   subclass whose constructor raises. 64,786 packets, 9 alerts, no socket
    constructed.
 3. **File access** — `builtins.open` is wrapped for a full run: the only file
    opened is the capture, mode `rb`.
@@ -209,13 +221,13 @@ reach upstream of it. Full argument, including what none of this proves, in
 data/generate.py       scapy capture synthesis + ground-truth labels, seeded
 ingest/                reader (packets in capture order), flow table
 features/              per-window feature extraction, EWMA baselines
-detectors/             5 behavioural detectors + the anomaly model
+detectors/             6 behavioural detectors + the anomaly model
 alerts/schema.py       Alert dataclass, computed confidence, JSON
 engine.py              the streaming loop
 server.py              FastAPI: WebSocket /stream, /api/alerts, /api/replay
 dashboard/index.html   live alert list + click-through evidence, no build step
 bench/                 throughput and precision/recall harnesses
-tools/selftest.py      19-check acceptance list, executed not ticked
+tools/selftest.py      20-check acceptance list, executed not ticked
 tools/isolation_check.py
 docs/MODEL.md          models, features, training, validation, and limits
 docs/ISOLATION.md      the unidirectional argument and its proofs
@@ -230,7 +242,7 @@ python train.py                        # -> docs/model_report.json
 python bench/metrics.py                # -> docs/metrics.json
 python bench/throughput.py             # -> docs/throughput.json
 python tools/isolation_check.py        # 3 layers, exit code is the verdict
-python tools/selftest.py               # 19 checks
+python tools/selftest.py               # 20 checks
 docker build -t sih26145 .
 docker run --rm --network none -v "${PWD}\data:/data:ro" sih26145 \
   /data/pcaps/mixed.pcap --pretty     # PowerShell; Git Bash mangles /data
@@ -257,9 +269,13 @@ Stated here so a reviewer does not have to find them:
 - **No encrypted-traffic classification (PS class d).** Unbuilt. This is *not*
   because decryption is out of scope — the class asks for metadata-only
   analysis. See the reasoning above.
-- **No UDP reflection/amplification (part of PS class a).** Unbuilt, and
-  unmeasurable with the current feature set.
-- **Six of six classes is not claimed.** Four complete, one partial, one absent.
+- **UDP amplification detection is victim-side only.** A one-way tap can only
+  ever observe the reflector→victim leg, never the (external, spoofed)
+  attacker→reflector leg — see `docs/DEFECTS.md` #21. A 1-2-reflector attack
+  using a small number of very high-potency amplifiers can clear the
+  byte-rate gate without reaching the minimum-reflector-count gate; not
+  defended against in this pass.
+- **Six of six classes is not claimed.** Five complete, one absent.
 - **Known defects.** Every defect found in an internal audit is recorded with
   cause and remedy in [docs/DEFECTS.md](docs/DEFECTS.md), including one that
   affects the anomaly model's training input.
@@ -267,9 +283,9 @@ Stated here so a reviewer does not have to find them:
 ## Extensions, in priority order
 
 `TLS_MALWARE` via JA3/JA4 from ClientHello metadata (completes the class list) →
-UDP reflection/amplification (completes class a) → NetFlow/IPFIX ingest alongside
-PCAP → live SPAN capture (would require re-making the layer-1 isolation argument,
-deliberately) → alert persistence and historical query.
+NetFlow/IPFIX ingest alongside PCAP → live SPAN capture (would require
+re-making the layer-1 isolation argument, deliberately) → alert persistence
+and historical query.
 
 A note on the second and third of those, because an earlier draft of this README
 oversold them: NetFlow ingest is **not** a drop-in. `engine.run()` hardcodes

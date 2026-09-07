@@ -96,10 +96,27 @@
         }
       ]
     },
+    "udp_amp.pcap": {
+      "packets": 28930,
+      "duration_s": 300.508,
+      "bytes": 21271384,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.508,
+      "ground_truth": [
+        {
+          "threat_class": "UDP_AMPLIFICATION",
+          "src": "*",
+          "dst": "10.0.1.40",
+          "start_epoch": 1756200250.0,
+          "end_epoch": 1756200265.0,
+          "note": "NTP reflection/amplification, ~800 pkt/s x ~900B for 15s"
+        }
+      ]
+    },
     "mixed.pcap": {
-      "packets": 52786,
+      "packets": 64786,
       "duration_s": 300.731,
-      "bytes": 17440087,
+      "bytes": 28744087,
       "first_epoch": 1756200000.0,
       "last_epoch": 1756200300.731,
       "ground_truth": [
@@ -142,6 +159,14 @@
           "start_epoch": 1756200120.0,
           "end_epoch": 1756200250.071,
           "note": "5.7 MB outbound over 130s, minimal inbound"
+        },
+        {
+          "threat_class": "UDP_AMPLIFICATION",
+          "src": "*",
+          "dst": "10.0.1.40",
+          "start_epoch": 1756200250.0,
+          "end_epoch": 1756200265.0,
+          "note": "NTP reflection/amplification, ~800 pkt/s x ~900B for 15s"
         }
       ]
     }

@@ -9,18 +9,18 @@
   "anomaly_model": true,
   "captures": {
     "mixed.pcap": {
-      "packets": 52786,
-      "bytes": 17440087,
-      "flows": 32118,
-      "alerts": 8,
+      "packets": 64786,
+      "bytes": 28744087,
+      "flows": 44118,
+      "alerts": 9,
       "capture_duration_s": 300.73,
       "runs": 3,
-      "pps_median": 19060.0,
-      "pps_min": 12044.9,
-      "pps_max": 20991.6,
-      "mbps_median": 50.378,
-      "flows_per_s_median": 11597.2,
-      "realtime_factor": 108.6
+      "pps_median": 14958.9,
+      "pps_min": 9053.9,
+      "pps_max": 14993.6,
+      "mbps_median": 53.095,
+      "flows_per_s_median": 10186.7,
+      "realtime_factor": 69.4
     },
     "synflood.pcap": {
       "packets": 47355,
@@ -29,12 +29,12 @@
       "alerts": 1,
       "capture_duration_s": 300.73,
       "runs": 3,
-      "pps_median": 18867.3,
-      "pps_min": 18553.2,
-      "pps_max": 19134.5,
-      "mbps_median": 37.85,
-      "flows_per_s_median": 12620.5,
-      "realtime_factor": 119.8
+      "pps_median": 12737.2,
+      "pps_min": 12547.7,
+      "pps_max": 12798.9,
+      "mbps_median": 25.552,
+      "flows_per_s_median": 8520.0,
+      "realtime_factor": 80.9
     }
   }
 }

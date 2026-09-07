@@ -89,7 +89,7 @@ the real engine**, anomaly model loaded.
 
 ```
 2. RUNTIME -- replay a capture with socket.socket() disabled
-   ok    52,786 packets, 8 alerts (1 from the loaded model), no socket created
+   ok    64,786 packets, 9 alerts (1 from the loaded model), no socket created
 ```
 
 Two details that matter:

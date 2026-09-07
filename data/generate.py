@@ -11,7 +11,7 @@ detection accuracy, and nothing built on them should be presented as such.
 
     python data/generate.py --seed 42 --out data/pcaps
 
-Writes seven captures plus data/labels.json.
+Writes eight captures plus data/labels.json.
 """
 
 from __future__ import annotations
@@ -229,6 +229,41 @@ def gen_synflood(rng: random.Random, start: float = 90.0, duration: float = 20.0
     return cap
 
 
+def gen_udp_amplification(rng: random.Random, start: float = 250.0, duration: float = 15.0,
+                          rate: int = 800) -> Capture:
+    """UDP reflection/amplification: many distinct external "reflectors" send
+    large UDP responses to one internal victim.
+
+    Only the reflector->victim leg is synthesized. A one-way tap at the
+    victim's gateway would never see the attacker->reflector leg either --
+    both ends of that conversation are external and (per real amplification
+    attacks) the attacker's request is spoofed to carry the victim's address,
+    so it never crosses this link. Same reasoning gen_synflood() already
+    applies to its own spoofed sources.
+
+    Port 123 (NTP), not 53/DNS -- avoids needless coupling to _attach_dns()'s
+    parse path for no benefit.
+    """
+    cap = Capture("udp_amp.pcap")
+    victim = SERVER_NET + "40"
+    interval = 1.0 / rate
+
+    t = start
+    while t < start + duration:
+        # Fresh random reflector every packet, same spoofing-signature
+        # rationale as gen_synflood's spoofed sources.
+        reflector = f"{rng.randint(11, 223)}.{rng.randint(0, 255)}.{rng.randint(0, 255)}.{rng.randint(1, 254)}"
+        cap.add(BASE_TS + t, eth(3) / IP(src=reflector, dst=victim) /
+                UDP(sport=123, dport=rng.randint(1024, 65535)) /
+                Raw(load=b"R" * 900))
+        t += interval
+
+    cap.truth.append(GroundTruth(
+        "UDP_AMPLIFICATION", "*", victim, BASE_TS + start, BASE_TS + start + duration,
+        f"NTP reflection/amplification, ~{rate} pkt/s x ~900B for {duration:.0f}s"))
+    return cap
+
+
 def gen_portscan(rng: random.Random, start: float = 150.0, duration: float = 12.0) -> Capture:
     """One source sweeping many ports across many hosts."""
     cap = Capture("portscan.pcap")
@@ -404,6 +439,7 @@ def build(seed: int, out_dir: str) -> dict:
         ("beacon.pcap", lambda r: gen_beacon(r), 103),
         ("dns_tunnel.pcap", lambda r: gen_dns_tunnel(r), 104),
         ("exfil.pcap", lambda r: gen_exfil(r), 105),
+        ("udp_amp.pcap", lambda r: gen_udp_amplification(r), 106),
     ]
 
     # Baseline capture: no attacks at all. The false-positive count measured on
