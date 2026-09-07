@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass
 from typing import Iterator
 
+import struct
+
 import dpkt
 
 # TCP flag bits, named so detector code reads like the RFC.
@@ -42,6 +44,10 @@ class Packet:
     dns_qname: str = ""
     dns_qtype: str = ""
     dns_is_response: bool = False
+    # Number of questions and answers seen. Shape metadata only -- no rdata is
+    # ever decoded or retained. dns_answers feeds amplification analysis.
+    dns_qcount: int = 0
+    dns_answers: int = 0
 
     @property
     def is_syn(self) -> bool:
@@ -55,6 +61,11 @@ class Packet:
     def is_rst(self) -> bool:
         return self.proto == "TCP" and bool(self.flags & TH_RST)
 
+
+# DNS is not just UDP/53. mDNS and LLMNR are ordinary background traffic; TCP/53
+# is what a tunnel uses once it outgrows a 512-byte datagram.
+_DNS_UDP_PORTS = {53, 5353, 5355}
+_DNS_TCP_PORTS = {53}
 
 _DNS_TYPES = {1: "A", 2: "NS", 5: "CNAME", 10: "NULL", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA"}
 
@@ -97,11 +108,19 @@ def parse(ts: float, buf: bytes, linktype: int = dpkt.pcap.DLT_EN10MB) -> Packet
         frame_len = len(buf)
 
         if isinstance(l4, dpkt.tcp.TCP):
-            return Packet(
+            pkt = Packet(
                 ts=ts, src=src, dst=dst, proto="TCP",
                 sport=l4.sport, dport=l4.dport,
                 length=frame_len, payload_len=len(l4.data), flags=l4.flags,
             )
+            # DNS over TCP. `dig +tcp` and every DNS tunnel that wants to move
+            # more than 512 bytes lands here, so locking DNS parsing to UDP made
+            # the whole tunnel detector bypassable with one flag.
+            if (l4.sport in _DNS_TCP_PORTS or l4.dport in _DNS_TCP_PORTS) and len(l4.data) > 2:
+                # RFC 1035 §4.2.2: TCP DNS messages carry a 2-byte big-endian
+                # length prefix that UDP messages do not.
+                _attach_dns(pkt, bytes(l4.data)[2:])
+            return pkt
 
         if isinstance(l4, dpkt.udp.UDP):
             pkt = Packet(
@@ -109,7 +128,7 @@ def parse(ts: float, buf: bytes, linktype: int = dpkt.pcap.DLT_EN10MB) -> Packet
                 sport=l4.sport, dport=l4.dport,
                 length=frame_len, payload_len=len(l4.data), flags=0,
             )
-            if 53 in (l4.sport, l4.dport) and l4.data:
+            if (l4.sport in _DNS_UDP_PORTS or l4.dport in _DNS_UDP_PORTS) and l4.data:
                 _attach_dns(pkt, bytes(l4.data))
             return pkt
 
@@ -131,16 +150,35 @@ def parse(ts: float, buf: bytes, linktype: int = dpkt.pcap.DLT_EN10MB) -> Packet
 
 
 def _attach_dns(pkt: Packet, payload: bytes) -> None:
-    """Extract QNAME/QTYPE only. We never read or reconstruct answer payloads."""
+    """Extract QNAME/QTYPE and answer *count*. Never reads answer rdata.
+
+    Recording how many answers a response carried is metadata about the shape of
+    the exchange, not its content -- it is what a reflection/amplification
+    detector needs, and it keeps the no-payload guarantee intact because no
+    rdata is decoded or retained.
+    """
     try:
         dns = dpkt.dns.DNS(payload)
         pkt.dns_is_response = bool(dns.qr)
         if dns.qd:
+            pkt.dns_qcount = len(dns.qd)
+            # Deliberately the FIRST question only, not a join of all of them.
+            # detectors/dns.py runs split_domain() over this string, and a
+            # joined "a.com;b.com" would parse to the nonsense parent
+            # "com;b.com". Multi-question DNS is essentially unused in practice
+            # (most resolvers reject qdcount > 1), so the count records that we
+            # saw it without corrupting the field downstream consumers parse.
             q = dns.qd[0]
             name = q.name
             pkt.dns_qname = name.decode(errors="replace") if isinstance(name, bytes) else str(name)
             pkt.dns_qtype = _DNS_TYPES.get(q.type, str(q.type))
-    except Exception:
+        if dns.an:
+            pkt.dns_answers = len(dns.an)
+    except (dpkt.UnpackError, dpkt.NeedData, struct.error,
+            IndexError, ValueError, AttributeError):
+        # Narrow rather than bare: a truncated or non-DNS payload on port 53 is
+        # an ordinary observation, but a TypeError from our own code is a bug
+        # and should not be laundered into silence.
         pass
 
 

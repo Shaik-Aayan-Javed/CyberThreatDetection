@@ -7,7 +7,7 @@ reviewer to find.
 Line references are to modules and functions rather than absolute line numbers,
 because several of these have been fixed and the numbers have moved.
 
-**Status summary — 6 fixed, 17 open.**
+**Status summary — 7 fixed, 16 open.**
 
 | # | Defect | Layer | Severity | Status |
 |---|---|---|---|---|
@@ -18,7 +18,7 @@ because several of these have been fixed and the numbers have moved.
 | 5 | Dead warm-up branch in `Metric.value` | features | Low | **Fixed** |
 | 6 | `_last_sweep = 0.0` made sweep throttle epoch-sensitive | ingest | Low | **Fixed** |
 | 7 | Training population is 94% responders, not monitored hosts | features | **Critical** | Open — documented |
-| 8 | DNS visible only on UDP/53, query side, first question | ingest | High | Open |
+| 8 | DNS visible only on UDP/53, query side, first question | ingest | High | **Fixed** |
 | 9 | DNS-based beaconing unreachable by construction | features | High | Open |
 | 10 | Windower files packets into the wrong window after a gap | ingest | High | Open |
 | 11 | No fragment reassembly, no tunnel decap, ICMPv6 misclassified | ingest | High | Open |
@@ -35,7 +35,7 @@ because several of these have been fixed and the numbers have moved.
 | 22 | DGA and tunnelling indistinguishable to a machine | detectors | Medium | Open |
 | 23 | `spoofed` is a label, not a gate | detectors | Medium | Open |
 
-Five open defects (11, 17, 19, and parts of 8 and 16) have **zero observable
+Several open defects — 11, 17, 19 and part of 16 — have **zero observable
 impact on the synthetic captures** and pass every check in `tools/selftest.py`.
 They are real-traffic defects. Defect 18 is the mechanism that would keep them
 invisible in production.
@@ -167,6 +167,39 @@ timestamps starting near zero the same expression suppresses *every* sweep for
 the first 30 s of stream time. Now initialised to `None` and anchored on the
 first packet.
 
+### 8. DNS was visible only on UDP/53 *(High)*
+
+**What.** `reader.py` extracted DNS only inside the UDP branch, so DNS-over-TCP/53,
+mDNS/5353 and LLMNR/5355 were invisible.
+
+**Why.** Two independent gates, and fixing either alone does nothing. The parser
+guarded DNS behind `isinstance(l4, dpkt.udp.UDP)`, *and* `features/extract.py`
+collected `dns_queries` inside its own `elif pkt.proto == "UDP"` branch — so a
+TCP DNS packet that parsed correctly would still have been counted as ordinary
+TCP and dropped before reaching the detector.
+
+**Impact.** The entire DNS tunnel detector was bypassable with one flag:
+`dig +tcp`. That is a standard red-team move, and TCP is what any tunnel uses
+once it outgrows a 512-byte datagram — so the more data an operator exfiltrated,
+the more likely we were to miss it.
+
+**Fix (applied).** Port sets for UDP (`53, 5353, 5355`) and TCP (`53`), with the
+RFC 1035 §4.2.2 two-byte length prefix stripped on TCP. DNS collection in
+`extract()` hoisted out of the UDP branch entirely. Answer *count* is now
+recorded (`dns_answers`) as shape metadata — no rdata is decoded or retained, so
+the no-payload guarantee holds. `_attach_dns`'s bare `except` narrowed to the
+parse errors, so a bug in our own code no longer degrades into silence.
+
+Verified against a synthetic `dig +tcp` tunnel — 90 high-entropy TXT queries
+under one parent, carried over TCP/53. Same capture, both code versions:
+**0 alerts before the fix, 1 `DNS_ANOMALY` after.**
+
+*Not joined.* All questions are counted (`dns_qcount`) but `dns_qname` still
+holds only the first. `detectors/dns.py` runs `split_domain()` over that string,
+and a joined `"a.com;b.com"` parses to the nonsense parent `"com;b.com"` —
+corrupting the detector to record a case (qdcount > 1) that most resolvers
+reject outright.
+
 ---
 
 ## Open
@@ -196,16 +229,6 @@ then filter to initiators, or add an initiator/responder flag as an 11th feature
 and let the forest separate the populations. The second is cheaper but widens
 the vector and invalidates the feature table in `docs/MODEL.md`. Both require a
 retrain and a refresh of `docs/model_report.json`.
-
-### 8. DNS visible only on UDP/53, query side, first question *(High)*
-`reader.py` extracts DNS only inside the UDP branch, only for `qd[0]`, and never
-from answers. DNS-over-TCP/53, mDNS/5353, LLMNR/5355 and DoT/853 are invisible,
-so the entire DNS tunnel detector is bypassed by `dig +tcp`. Answer-side exfil
-(data in TXT/NULL rdata — the iodine/dnscat2 downstream) is structurally
-undetectable.
-**Fix.** Hoist DNS extraction out of the UDP branch into a port set for UDP plus
-TCP/53 with the 2-byte length prefix stripped; iterate all of `dns.qd`; record
-answer *sizes* without retaining rdata, preserving the no-payload claim.
 
 ### 9. DNS-based beaconing unreachable by construction *(High)*
 `extract()` excludes `dport == 53` from `contacts`, the beacon detector's only

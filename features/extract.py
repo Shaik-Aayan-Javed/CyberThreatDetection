@@ -219,6 +219,15 @@ def extract(window: Window) -> WindowFeatures:
         peer.bytes_in += pkt.length
         peer.bytes_from[pkt.src] += pkt.length
 
+        # DNS collection is transport-agnostic. It used to live inside the UDP
+        # branch, which meant a tunnel over TCP/53 parsed correctly at ingest
+        # and then never reached the detector -- the query was counted as
+        # ordinary TCP and dropped. Anything the reader identified as DNS
+        # belongs here regardless of how it travelled.
+        if pkt.dns_qname and not pkt.dns_is_response:
+            wf.dns_queries += 1
+            src.dns_queries.append(pkt)
+
         if pkt.proto == "TCP":
             wf.tcp += 1
             src.tcp += 1
@@ -243,9 +252,6 @@ def extract(window: Window) -> WindowFeatures:
             src.dst_ports.add(pkt.dport)
             dst.udp_in += 1
             dst.dports[pkt.dport] += 1
-            if pkt.dns_qname and not pkt.dns_is_response:
-                wf.dns_queries += 1
-                src.dns_queries.append(pkt)
             if pkt.dport != 53:
                 src.contacts.append((pkt.dst, pkt.dport, pkt.ts, pkt.length))
         elif pkt.proto == "ICMP":
