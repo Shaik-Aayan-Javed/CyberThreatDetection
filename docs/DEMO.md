@@ -107,7 +107,7 @@ Click `ANOMALOUS_FLOW`.
 
 Then, before anyone asks, the honest half:
 
-> "AUC near 1.0 flatters it. On exfiltration the model scores 0.75 — ranked
+> "AUC near 1.0 flatters it. On exfiltration the model scores 0.73 — ranked
 > correctly, but inside the benign tail, so it would not alert on its own. The
 > rule detector catches that one at 0.98 on directional evidence. The model
 > catches high-volume anomalies, the rules catch low-and-slow, and neither alone

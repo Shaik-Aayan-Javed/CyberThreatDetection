@@ -37,7 +37,7 @@ floor is what is actually in effect.
 | `SYN_FLOOD` | SYN rate vs baseline, completion ratio ≈ 0, **source-IP Shannon entropy** (separates one aggressive host from a spoofed flood) | `detectors/synflood.py` |
 | `PORT_SCAN` | port + host fan-out from one source, RST ratio, sequential-port runs | `detectors/portscan.py` |
 | `C2_BEACON` | coefficient of variation of inter-arrival times — scale-free, so one threshold catches a 20s and a 300s beacon | `detectors/beacon.py` |
-| `DNS_ANOMALY` | QNAME character entropy + bigram plausibility against a real-domain corpus, label length, TXT/NULL ratio | `detectors/dns.py` |
+| `DNS_ANOMALY` | QNAME character entropy + bigram plausibility against a real-domain corpus, label length, TXT/NULL ratio — over UDP/53, TCP/53, mDNS, and LLMNR | `detectors/dns.py` |
 | `EXFIL` | outbound:inbound byte ratio to a single destination, sustained | `detectors/exfil.py` |
 | `ANOMALOUS_FLOW` | IsolationForest on 10 per-host features, trained on benign traffic only | `detectors/anomaly.py` |
 
@@ -46,10 +46,11 @@ floor is what is actually in effect.
 **PS class (a) is partial.** It names three attack shapes — SYN floods, spoofed
 floods, and *UDP reflection/amplification*. We implement the first two. A pure
 UDP flood cannot fire at all, because `detectors/synflood.py:43` gates on a TCP
-SYN counter. Amplification is not merely undetected but currently
-**unmeasurable**: `TargetFeatures` counts UDP packets and not UDP bytes, and DNS
-answers are discarded at `ingest/reader.py:134`, so no request:response ratio
-exists to threshold.
+SYN counter. Amplification is still unmeasurable, though less so than it was:
+the reader now records an answer *count* (`dns_answers`) rather than discarding
+DNS responses outright, but `TargetFeatures` still has no `udp_bytes_in` and no
+per-service-port byte breakdown, so there is no request:response *size* ratio
+to threshold. See `docs/DEFECTS.md` #21.
 
 **PS class (d) — malware in encrypted sessions — is not built.** Note what it
 actually asks for: detection from TLS/QUIC *metadata alone* (JA3/JA3S/JA4,
@@ -142,6 +143,17 @@ window consumers from the first line of code**, so "batch → streaming" was nev
 a rewrite. `engine.run()` drives the same loop whether output goes to stdout or
 a WebSocket, and `--speed` changes pacing without changing the code path — so
 the demo and the benchmark exercise the same pipeline.
+
+**A streaming pipeline has to survive the traffic it's watching for.** A flow
+table with no bound will run out of memory during exactly the flood it exists
+to report — every spoofed source in a SYN flood mints a new flow, and idle
+eviction alone can never catch up with a flood, because every record it holds
+is recent. `ingest/flows.py` bounds this three ways: an active timeout so a
+persistent connection can't accumulate state forever, a hard cap on resident
+flows checked *before* insertion, and a packet-count sweep trigger so a burst
+can't outrun a timer that only checks capture time. Verified: 600,000 unique
+spoofed 5-tuples at 100k pps against a 5,000-flow cap held peak residency at
+exactly 5,000. Full writeup in `docs/DEFECTS.md` #1.
 
 ## Alerts explain themselves
 
@@ -237,7 +249,7 @@ Stated here so a reviewer does not have to find them:
   shortcut — but authoring our own ground truth still makes the numbers clean in
   a way production traffic never is.)
 - **The anomaly model does not separate exfiltration by threshold.** It ranks it
-  correctly (ROC-AUC 0.993) but scores it inside the benign tail. The `EXFIL`
+  correctly (ROC-AUC 0.993) but scores 0.727 — inside the benign tail. The `EXFIL`
   rule catches it; the model corroborates. Measured, in `docs/MODEL.md`.
 - **Low-and-slow traffic is below the model's volume floor** (20 packets/window)
   — the beacon and DNS-tunnel hosts are invisible to it and are caught by rules

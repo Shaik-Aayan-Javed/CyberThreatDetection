@@ -34,11 +34,12 @@ Three named shapes; two implemented.
 2. No detector reads `sport`. It is parsed (`ingest/reader.py:37,102,109`) but
    used only for flow keying (`ingest/flows.py:80,91-98`), so "responses from
    source port 53/123/11211 converging on a victim" is invisible.
-3. The amplification factor is **unrepresentable**, not merely unused.
-   `TargetFeatures` has `udp_in` as a packet count (`extract.py:105,203`) with
-   no byte total and no per-service breakdown, and DNS answers are discarded
-   outright (`reader.py:134`, `extract.py:205`) — so there is no
-   request:response size pair anywhere in the feature set to threshold.
+3. The amplification factor is still **unrepresentable**, though partially less
+   so: the reader now records `dns_answers` (an answer count) instead of
+   discarding DNS responses outright. But `TargetFeatures` has no `udp_bytes_in`
+   and no per-service-port byte breakdown, so there is still no request:response
+   *size* pair anywhere in the feature set to threshold. See
+   `docs/DEFECTS.md` #21.
 
 **One honest qualification on spoofing.** The `spoofed` flag at `synflood.py:69`
 is a *label*, not a gate: it selects the wording of one evidence note
@@ -66,7 +67,10 @@ since regularity cannot be established from two intervals.
 > *"Entropy/n-gram analysis of DNS query names, plus query-length and
 > record-type anomalies."*
 
-`detectors/dns.py:187-191` implements both halves as separate tests:
+Detected over UDP/53, TCP/53, mDNS (5353) and LLMNR (5355) —
+`ingest/reader.py` no longer gates DNS parsing to UDP only, which closed the
+`dig +tcp` bypass (`docs/DEFECTS.md` #8). `detectors/dns.py:187-191`
+implements both halves as separate tests:
 
 - **DGA** (lexical): per-character Shannon entropy ≥ 3.4 bits **and** mean
   bigram log-probability ≤ −3.6 against an inline real-domain corpus
@@ -233,7 +237,7 @@ attack during fit**, which mirrors what a passive monitor can actually collect.
 Mean ROC-AUC 0.997 across held-out attack captures.
 
 `docs/MODEL.md` documents where that number flatters the model: on exfiltration
-it scores 0.751, ranked correctly but *inside* the benign tail, so it would not
+it scores 0.727, ranked correctly but *inside* the benign tail, so it would not
 alert on its own. Hosts under 20 packets/window are unscored, so the beacon and
 DNS-tunnel hosts are invisible to it. The rules catch what the model misses and
 vice versa; neither alone is sufficient.

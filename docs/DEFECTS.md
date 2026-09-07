@@ -346,15 +346,16 @@ so dict literals are displayed to an operator as observations of the link.
 let the SYN flood detector say "entropy 7.2 bits vs a learned 1.4" instead of an
 unanchored number.
 
-### 21. Amplification ratio is unrepresentable *(Medium)*
-`TargetFeatures` counts UDP packets but has no `udp_bytes_in`, no per-service-port
-byte breakdown and no request/response pairing; DNS answers are discarded at
-ingest. The 50–200× byte amplification signature of DNS/NTP/memcached reflection
-cannot be computed from anything the feature layer produces.
-**Fix.** Add `bytes_in_by_port` and `udp_bytes_in`, retain answer sizes (defect
-8), then a detector comparing per-port inbound volume against outbound request
-volume. On a one-way tap you may only see the amplified half, so scope the claim
-to "reflection observed at the victim".
+### 21. Amplification ratio is unrepresentable *(Medium — partially addressed)*
+`TargetFeatures` counts UDP packets but has no `udp_bytes_in` and no
+per-service-port byte breakdown. Defect 8's fix retains an answer *count*
+(`dns_answers`) instead of discarding DNS responses outright, but that is a
+packet count, not a byte total, and nothing reads it yet — there is still no
+request/response *size* pairing anywhere in the feature layer.
+**Fix.** Add `bytes_in_by_port` and `udp_bytes_in`, wire `dns_answers` into a
+byte-aware equivalent, then a detector comparing per-port inbound volume against
+outbound request volume. On a one-way tap you may only see the amplified half,
+so scope the claim to "reflection observed at the victim".
 
 ### 22. DGA and tunnelling indistinguishable to a machine *(Medium)*
 Both emit `threat_class = DNS_ANOMALY` with identical evidence field names and

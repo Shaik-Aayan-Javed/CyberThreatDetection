@@ -1,7 +1,8 @@
 # Runtime proof of the unidirectional constraint.
 #
 #   docker build -t sih26145 .
-#   docker run --rm --network none -v "$PWD/data:/data:ro" sih26145 /data/pcaps/mixed.pcap
+#   docker run --rm --network none -v "${PWD}\data:/data:ro" sih26145 /data/pcaps/mixed.pcap
+#   (PowerShell; Git Bash rewrites /data/... into a Windows path)
 #
 # `--network none` gives the container no interfaces but loopback, and the
 # capture is mounted read-only. If any part of the detection path needed a

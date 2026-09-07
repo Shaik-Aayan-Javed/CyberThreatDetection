@@ -235,9 +235,9 @@ Attack captures are scored, never trained on. ROC-AUC over
 
 | Capture | ROC-AUC | Attacker score | Benign score |
 |---|---|---|---|
-| `portscan.pcap` | 1.000 | 0.994 | 0.094 |
-| `exfil.pcap` | 0.993 | 0.751 | 0.145 |
-| `mixed.pcap` | 0.997 | 0.776 | 0.154 |
+| `portscan.pcap` | 1.000 | 0.972 | 0.089 |
+| `exfil.pcap` | 0.993 | 0.727 | 0.137 |
+| `mixed.pcap` | 0.997 | 0.752 | 0.146 |
 
 Mean ROC-AUC **0.997**. Live numbers in `docs/model_report.json`.
 
@@ -246,12 +246,12 @@ Mean ROC-AUC **0.997**. Live numbers in `docs/model_report.json`.
 AUC ≈ 1.0 flatters this model, and the raw distributions show why it should not
 be taken at face value:
 
-- benign minimum raw score: **−0.1015**
-- port-scan attacker: **−0.144 to −0.138** → cleanly below every benign window
-- exfiltration attacker: **−0.050 to −0.041** → **inside the benign tail**
+- benign minimum raw score: **−0.0981**
+- port-scan attacker: **−0.1314 to −0.1252** → cleanly below every benign window
+- exfiltration attacker: **−0.0451 to −0.0260** → **inside the benign tail**
 
 So exfiltration is *ranked* correctly but not *separable* by threshold. It
-scores 0.751 — real corroboration, below the 0.92 alerting bar. The `EXFIL` rule
+scores 0.727 — real corroboration, below the 0.92 alerting bar. The `EXFIL` rule
 detector catches it at 0.98 confidence on directional evidence.
 
 Three concrete limitations:

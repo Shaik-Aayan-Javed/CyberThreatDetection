@@ -64,6 +64,7 @@ quietly skipped:
 | Excluded | Why it is not in the detection path |
 |---|---|
 | `server.py` | Dashboard backend. Binds **loopback** to serve the enclave-local UI. Pushes alerts outward to a browser; never toward the monitored link. |
+| `config.py` | Service configuration. Reads `.env` for the dashboard's bind address and paths; imported by `server.py` only, never by the detection path. |
 | `train.py` | Offline model fitting. Reads capture files. |
 | `data/generate.py` | Offline capture authoring. Uses scapy to **write files** — `wrpcap`, never `sendp`. |
 | `bench/` | Offline measurement harness. |
@@ -122,10 +123,13 @@ also means a capture can be mounted read-only, and is, in the container below.
 
 ## Layer 4 — Container: no network interface at all
 
-```bash
+```powershell
 docker build -t sih26145 .
-docker run --rm --network none -v "$PWD/data:/data:ro" sih26145 /data/pcaps/mixed.pcap --pretty
+docker run --rm --network none -v "${PWD}\data:/data:ro" sih26145 /data/pcaps/mixed.pcap --pretty
 ```
+
+Run from PowerShell, not Git Bash — Git Bash rewrites `/data/...` into a Windows
+path and the container will not find the capture.
 
 `--network none` gives the container loopback and nothing else — no interface,
 no DNS, no route. The capture is mounted `:ro`. The image installs
@@ -167,11 +171,11 @@ Worth saying before someone asks:
 
 ## Reproducing
 
-```bash
+```powershell
 python tools/isolation_check.py                  # layers 1-3, exit code is the verdict
 python tools/selftest.py                         # includes both isolation invariants
-docker build -t sih26145 .                       # layer 4
-docker run --rm --network none -v "$PWD/data:/data:ro" sih26145 /data/pcaps/mixed.pcap --pretty
+docker build -t sih26145 .                       # layer 4 -- rebuild after any code change
+docker run --rm --network none -v "${PWD}\data:/data:ro" sih26145 /data/pcaps/mixed.pcap --pretty
 ```
 
 `tools/selftest.py` runs the isolation invariants alongside the detection ones,
