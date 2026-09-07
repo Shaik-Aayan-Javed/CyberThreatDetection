@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unidirectional Threat Monitor</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --line:#2a3038;
+    --text:#e6edf3; --dim:#8b949e; --accent:#58a6ff;
+    --crit:#f85149; --high:#ff9d33; --med:#e3b341; --low:#3fb950;
+    --mono:ui-monospace,"Cascadia Code",Consolas,"Courier New",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+         padding:14px 20px;background:var(--panel);border-bottom:1px solid var(--line)}
+  h1{font-size:16px;margin:0;letter-spacing:.4px;font-weight:600}
+  .badge{font:11px/1 var(--mono);padding:5px 9px;border-radius:4px;
+         background:rgba(63,185,80,.12);color:var(--low);border:1px solid rgba(63,185,80,.35)}
+  .spacer{flex:1}
+  .conn{font:11px var(--mono);color:var(--dim)}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;
+       background:var(--crit);margin-right:5px;vertical-align:middle}
+  .dot.on{background:var(--low)}
+
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+            padding:12px 20px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  select,button{background:#0d1117;color:var(--text);border:1px solid var(--line);
+                border-radius:5px;padding:7px 11px;font:13px var(--mono)}
+  button{cursor:pointer;border-color:#2f6f4f;background:#12301f;color:#7ee2a8}
+  button:hover:not(:disabled){background:#173d28}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  label{font-size:12px;color:var(--dim)}
+
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+         gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+  .tile{background:var(--panel);padding:12px 16px}
+  .tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim)}
+  .tile .v{font:20px/1.3 var(--mono);margin-top:3px}
+
+  main{display:grid;grid-template-columns:minmax(340px,1fr) minmax(340px,1.2fr);
+       gap:1px;background:var(--line);min-height:calc(100vh - 210px)}
+  section{background:var(--bg);display:flex;flex-direction:column;min-width:0}
+  .head{padding:10px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.9px;
+        color:var(--dim);background:var(--panel);border-bottom:1px solid var(--line)}
+  .list{overflow-y:auto;flex:1;max-height:calc(100vh - 250px)}
+
+  .alert{padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer;
+         border-left:3px solid transparent;display:flex;gap:12px;align-items:baseline}
+  .alert:hover{background:var(--panel2)}
+  .alert.sel{background:var(--panel2);border-left-color:var(--accent)}
+  .alert.CRITICAL{border-left-color:var(--crit)}
+  .alert.HIGH{border-left-color:var(--high)}
+  .alert.MEDIUM{border-left-color:var(--med)}
+  .alert.LOW{border-left-color:var(--low)}
+  .alert .cls{font:12px var(--mono);font-weight:600;min-width:118px}
+  .alert .conf{font:12px var(--mono);color:var(--accent);min-width:44px}
+  .alert .sev{font:10px var(--mono);padding:2px 6px;border-radius:3px;background:#21262d}
+  .alert .t{font:11px var(--mono);color:var(--dim);margin-left:auto;white-space:nowrap}
+  .sev.CRITICAL{color:var(--crit)} .sev.HIGH{color:var(--high)}
+  .sev.MEDIUM{color:var(--med)} .sev.LOW{color:var(--low)}
+
+  .detail{padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 250px)}
+  .empty{color:var(--dim);padding:40px 20px;text-align:center;font-size:13px}
+  .dt{font-size:19px;font-weight:600;margin:0 0 4px}
+  .meta{font:12px var(--mono);color:var(--dim);margin-bottom:16px;word-break:break-all}
+  .kv{display:grid;grid-template-columns:120px 1fr;gap:6px 14px;
+      font:12px var(--mono);margin-bottom:18px}
+  .kv .k{color:var(--dim)}
+  .ev{margin-bottom:13px;padding-bottom:13px;border-bottom:1px solid var(--line)}
+  .ev:last-child{border-bottom:none}
+  .ev .row{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+  .ev .f{font:12px var(--mono);color:var(--accent)}
+  .ev .v{font:13px var(--mono);font-weight:600}
+  .bar{height:5px;background:#21262d;border-radius:3px;margin-top:7px;overflow:hidden;
+       position:relative}
+  .bar i{display:block;height:100%;background:var(--high);border-radius:3px}
+  .bar u{position:absolute;top:-2px;width:2px;height:9px;background:var(--dim)}
+  .ev .n{font-size:11.5px;color:var(--dim);margin-top:6px}
+  .ev .base{font:11px var(--mono);color:var(--dim);margin-top:4px}
+  footer{padding:9px 20px;font-size:11px;color:var(--dim);background:var(--panel);
+         border-top:1px solid var(--line)}
+  @media(max-width:860px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>UNIDIRECTIONAL THREAT MONITOR</h1>
+  <span class="badge">PASSIVE &middot; READ-ONLY &middot; NO RETURN PATH</span>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot" id="dot"></span><span id="connText">connecting</span></span>
+</header>
+
+<div class="controls">
+  <label for="capture">capture</label>
+  <select id="capture"></select>
+  <label for="speed">replay speed</label>
+  <select id="speed">
+    <option value="10">10x</option>
+    <option value="20" selected>20x</option>
+    <option value="1">1x (real time)</option>
+    <option value="0">max (benchmark)</option>
+  </select>
+  <button id="start">▶ Start replay</button>
+  <span id="status" class="conn"></span>
+</div>
+
+<div class="tiles">
+  <div class="tile"><div class="k">Packets</div><div class="v" id="s_pkts">0</div></div>
+  <div class="tile"><div class="k">Flows</div><div class="v" id="s_flows">0</div></div>
+  <div class="tile"><div class="k">Windows</div><div class="v" id="s_win">0</div></div>
+  <div class="tile"><div class="k">Alerts</div><div class="v" id="s_alerts">0</div></div>
+  <div class="tile"><div class="k">Critical</div><div class="v" id="s_crit" style="color:var(--crit)">0</div></div>
+  <div class="tile"><div class="k">High</div><div class="v" id="s_high" style="color:var(--high)">0</div></div>
+  <div class="tile"><div class="k">Throughput</div><div class="v" id="s_pps">0</div></div>
+</div>
+
+<main>
+  <section>
+    <div class="head">Live alerts &mdash; newest first</div>
+    <div class="list" id="list"><div class="empty">No alerts yet. Start a replay.</div></div>
+  </section>
+  <section>
+    <div class="head">Selected alert &mdash; why it fired</div>
+    <div class="detail" id="detail"><div class="empty">Click an alert to see its evidence.</div></div>
+  </section>
+</main>
+
+<footer id="foot">Controlled synthetic demo traffic &mdash; results demonstrate detector behaviour on known ground truth, not production accuracy.</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+let alerts = [], selected = null, ws = null;
+
+const fmt = n => (n ?? 0).toLocaleString();
+const num = v => {
+  if (v === null || v === undefined) return "-";
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v/1e6).toFixed(2) + "M";
+  if (a >= 1e3) return (v/1e3).toFixed(1) + "k";
+  if (a >= 10)  return v.toFixed(1);
+  if (Number.isInteger(v)) return String(v);
+  return v.toFixed(3);
+};
+
+function connect(){
+  ws = new WebSocket(`ws://${location.host}/stream`);
+  ws.onopen = () => { $("dot").classList.add("on"); $("connText").textContent = "stream connected"; };
+  ws.onclose = () => {
+    $("dot").classList.remove("on"); $("connText").textContent = "disconnected — retrying";
+    setTimeout(connect, 1500);
+  };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === "snapshot"){ alerts = m.data.alerts || []; renderList(); renderStats(m.data.stats); }
+    else if (m.type === "alert"){ alerts.unshift(m.data); if(alerts.length>500) alerts.pop(); renderList(); }
+    else if (m.type === "stats"){ renderStats(m.data); }
+    else if (m.type === "done"){ renderStats(m.data); running(false); $("status").textContent = "replay complete"; }
+    else if (m.type === "error"){ $("status").textContent = "error: " + m.data.message; running(false); }
+  };
+}
+
+function renderStats(s){
+  if (!s) return;
+  $("s_pkts").textContent  = fmt(s.packets);
+  $("s_flows").textContent = fmt(s.flows);
+  $("s_win").textContent   = fmt(s.windows);
+  $("s_alerts").textContent= fmt(s.alerts);
+  $("s_crit").textContent  = fmt((s.by_severity||{}).CRITICAL || 0);
+  $("s_high").textContent  = fmt((s.by_severity||{}).HIGH || 0);
+  $("s_pps").textContent   = s.throughput_pps ? num(s.throughput_pps) + " p/s" : "0";
+}
+
+function renderList(){
+  const el = $("list");
+  if (!alerts.length){ el.innerHTML = '<div class="empty">No alerts yet. Start a replay.</div>'; return; }
+  el.innerHTML = alerts.map((a,i) => `
+    <div class="alert ${a.severity} ${i===selected?'sel':''}" data-i="${i}">
+      <span class="cls">${a.threat_class}</span>
+      <span class="conf">${(a.confidence*100).toFixed(0)}%</span>
+      <span class="sev ${a.severity}">${a.severity}</span>
+      <span class="t">${(a.timestamp||'').slice(11,19)}</span>
+    </div>`).join("");
+  el.querySelectorAll(".alert").forEach(n =>
+    n.onclick = () => { selected = +n.dataset.i; renderList(); renderDetail(); });
+}
+
+function evidenceBar(ev){
+  // Bar shows observed value against its learned baseline. The tick marks the
+  // baseline; a bar well past it is the visual form of "why this fired".
+  if (ev.baseline === null || ev.baseline === undefined) return "";
+  const b = Math.abs(ev.baseline), v = Math.abs(ev.value);
+  const scale = Math.max(b * 2, v, 1e-9);
+  const vw = Math.min(100, v / scale * 100);
+  const bw = Math.min(100, b / scale * 100);
+  return `<div class="bar"><i style="width:${vw}%"></i><u style="left:${bw}%"></u></div>
+          <div class="base">baseline ${num(ev.baseline)}${ev.unit||""} &nbsp;·&nbsp; observed ${num(ev.value)}${ev.unit||""}</div>`;
+}
+
+function renderDetail(){
+  const a = alerts[selected];
+  if (!a){ $("detail").innerHTML = '<div class="empty">Click an alert to see its evidence.</div>'; return; }
+  const anomaly = a.anomaly_score !== undefined && a.anomaly_score !== null
+    ? `<div class="k">anomaly score</div><div>${a.anomaly_score.toFixed(3)} <span style="color:var(--dim)">(model corroboration)</span></div>` : "";
+  $("detail").innerHTML = `
+    <div class="dt">${a.threat_class.replace(/_/g," ")}</div>
+    <div class="meta">${a.flow_id}</div>
+    <div class="kv">
+      <div class="k">confidence</div><div>${(a.confidence*100).toFixed(1)}%</div>
+      <div class="k">severity</div><div class="sev ${a.severity}">${a.severity}</div>
+      <div class="k">source</div><div>${a.src}</div>
+      <div class="k">destination</div><div>${a.dst}</div>
+      <div class="k">detector</div><div>${a.detector}</div>
+      <div class="k">window</div><div>${a.window.duration_s}s ending ${a.timestamp.slice(11,23)}</div>
+      ${anomaly}
+    </div>
+    <div class="head" style="margin:0 -20px 14px;padding-left:20px">Evidence</div>
+    ${a.evidence.map(ev => `
+      <div class="ev">
+        <div class="row"><span class="f">${ev.feature}</span>
+          <span class="v">${num(ev.value)}${ev.unit ? " " + ev.unit : ""}</span></div>
+        ${evidenceBar(ev)}
+        ${ev.note ? `<div class="n">${ev.note}</div>` : ""}
+      </div>`).join("")}`;
+}
+
+function running(on){
+  $("start").disabled = on;
+  $("start").textContent = on ? "● Replaying…" : "▶ Start replay";
+}
+
+async function loadCaptures(){
+  const r = await fetch("/api/captures");
+  const d = await r.json();
+  $("capture").innerHTML = d.captures.map(c =>
+    `<option value="${c.name}" ${c.name==="mixed.pcap"?"selected":""}>${c.name} (${(c.bytes/1e6).toFixed(1)} MB)</option>`).join("");
+  if (!d.model_trained) $("foot").textContent =
+    "Anomaly model not trained — run `python train.py`. Rule detectors are unaffected. " + $("foot").textContent;
+}
+
+$("start").onclick = async () => {
+  alerts = []; selected = null; renderList(); renderDetail();
+  running(true); $("status").textContent = "replaying…";
+  const r = await fetch("/api/replay", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({capture: $("capture").value, speed: +$("speed").value, model: true})
+  });
+  const d = await r.json();
+  if (!d.ok){ $("status").textContent = d.error; running(false); }
+};
+
+loadCaptures();
+connect();
+</script>
+</body>
+</html>

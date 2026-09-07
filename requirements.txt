@@ -1,0 +1,13 @@
+# Detection path runtime. Pinned to what the prototype was measured on.
+dpkt==1.9.8
+numpy==2.5.2
+scikit-learn==1.9.0
+joblib==1.5.3
+
+# Dashboard backend (not part of the detection path -- see docs/ISOLATION.md).
+fastapi==0.141.1
+uvicorn==0.52.4
+websockets==17.0.1
+
+# Capture authoring only (data/generate.py). Not imported at detection time.
+scapy==2.7.0

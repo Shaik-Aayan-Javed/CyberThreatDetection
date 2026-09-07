@@ -1,0 +1,7 @@
+.venv
+__pycache__
+**/__pycache__
+.git
+dashboard
+data/alerts.jsonl
+*.md

@@ -1,0 +1,40 @@
+{
+  "hardware": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel",
+    "cpu_count": 18,
+    "python": "3.13.0"
+  },
+  "window_s": 5.0,
+  "anomaly_model": true,
+  "captures": {
+    "mixed.pcap": {
+      "packets": 52786,
+      "bytes": 17440087,
+      "flows": 32118,
+      "alerts": 8,
+      "capture_duration_s": 300.73,
+      "runs": 3,
+      "pps_median": 18357.2,
+      "pps_min": 12209.5,
+      "pps_max": 18593.2,
+      "mbps_median": 48.52,
+      "flows_per_s_median": 11169.5,
+      "realtime_factor": 104.6
+    },
+    "synflood.pcap": {
+      "packets": 47355,
+      "bytes": 11874781,
+      "flows": 31676,
+      "alerts": 1,
+      "capture_duration_s": 300.73,
+      "runs": 3,
+      "pps_median": 17277.6,
+      "pps_min": 17050.9,
+      "pps_max": 17432.9,
+      "mbps_median": 34.66,
+      "flows_per_s_median": 11557.1,
+      "realtime_factor": 109.7
+    }
+  }
+}

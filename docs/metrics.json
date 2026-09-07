@@ -1,0 +1,168 @@
+{
+  "per_class": {
+    "SYN_FLOOD": {
+      "tp": 2,
+      "fp": 0,
+      "episodes": 2,
+      "detected": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "PORT_SCAN": {
+      "tp": 2,
+      "fp": 0,
+      "episodes": 2,
+      "detected": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "C2_BEACON": {
+      "tp": 4,
+      "fp": 0,
+      "episodes": 2,
+      "detected": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "DNS_ANOMALY": {
+      "tp": 4,
+      "fp": 0,
+      "episodes": 2,
+      "detected": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "EXFIL": {
+      "tp": 2,
+      "fp": 0,
+      "episodes": 2,
+      "detected": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    }
+  },
+  "captures": {
+    "normal.pcap": {
+      "packets": 16701,
+      "episodes": 0,
+      "rule_alerts": 0,
+      "anomaly_alerts": 0,
+      "matched_alerts": 0
+    },
+    "synflood.pcap": {
+      "packets": 47355,
+      "episodes": 1,
+      "rule_alerts": 1,
+      "anomaly_alerts": 0,
+      "matched_alerts": 1
+    },
+    "portscan.pcap": {
+      "packets": 17616,
+      "episodes": 1,
+      "rule_alerts": 1,
+      "anomaly_alerts": 1,
+      "matched_alerts": 1
+    },
+    "beacon.pcap": {
+      "packets": 16848,
+      "episodes": 1,
+      "rule_alerts": 2,
+      "anomaly_alerts": 0,
+      "matched_alerts": 2
+    },
+    "dns_tunnel.pcap": {
+      "packets": 17274,
+      "episodes": 1,
+      "rule_alerts": 2,
+      "anomaly_alerts": 0,
+      "matched_alerts": 2
+    },
+    "exfil.pcap": {
+      "packets": 21783,
+      "episodes": 1,
+      "rule_alerts": 1,
+      "anomaly_alerts": 0,
+      "matched_alerts": 1
+    },
+    "mixed.pcap": {
+      "packets": 52786,
+      "episodes": 5,
+      "rule_alerts": 7,
+      "anomaly_alerts": 1,
+      "matched_alerts": 7
+    }
+  },
+  "benign_false_positives": 0,
+  "anomaly_channel": {
+    "total_alerts": 2,
+    "on_labelled_attacker": 2,
+    "note": "unsupervised channel; excluded from the class table by design"
+  },
+  "latency": [
+    {
+      "capture": "synflood.pcap",
+      "threat_class": "SYN_FLOOD",
+      "latency_s": 5.0
+    },
+    {
+      "capture": "portscan.pcap",
+      "threat_class": "PORT_SCAN",
+      "latency_s": 5.0
+    },
+    {
+      "capture": "beacon.pcap",
+      "threat_class": "C2_BEACON",
+      "latency_s": 140.0
+    },
+    {
+      "capture": "dns_tunnel.pcap",
+      "threat_class": "DNS_ANOMALY",
+      "latency_s": 5.0
+    },
+    {
+      "capture": "exfil.pcap",
+      "threat_class": "EXFIL",
+      "latency_s": 45.0
+    },
+    {
+      "capture": "mixed.pcap",
+      "threat_class": "SYN_FLOOD",
+      "latency_s": 5.0
+    },
+    {
+      "capture": "mixed.pcap",
+      "threat_class": "PORT_SCAN",
+      "latency_s": 5.0
+    },
+    {
+      "capture": "mixed.pcap",
+      "threat_class": "C2_BEACON",
+      "latency_s": 140.0
+    },
+    {
+      "capture": "mixed.pcap",
+      "threat_class": "DNS_ANOMALY",
+      "latency_s": 5.0
+    },
+    {
+      "capture": "mixed.pcap",
+      "threat_class": "EXFIL",
+      "latency_s": 45.0
+    }
+  ],
+  "macro": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+  },
+  "latency_summary": {
+    "min_s": 5.0,
+    "median_s": 5.0,
+    "max_s": 140.0
+  }
+}

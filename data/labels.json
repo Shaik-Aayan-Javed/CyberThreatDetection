@@ -1,0 +1,149 @@
+{
+  "seed": 42,
+  "base_epoch": 1756200000.0,
+  "warning": "Controlled synthetic demo traffic. Detection metrics computed against these captures show that the detectors fire correctly on known ground truth. They are NOT a measure of production detection accuracy.",
+  "captures": {
+    "normal.pcap": {
+      "packets": 16701,
+      "duration_s": 300.4,
+      "bytes": 9768735,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.4,
+      "ground_truth": []
+    },
+    "synflood.pcap": {
+      "packets": 47355,
+      "duration_s": 300.731,
+      "bytes": 11874781,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.731,
+      "ground_truth": [
+        {
+          "threat_class": "SYN_FLOOD",
+          "src": "*",
+          "dst": "10.0.1.10",
+          "start_epoch": 1756200090.0,
+          "end_epoch": 1756200110.0,
+          "note": "spoofed-source SYN flood, ~1500 pkt/s for 20s"
+        }
+      ]
+    },
+    "portscan.pcap": {
+      "packets": 17616,
+      "duration_s": 300.631,
+      "bytes": 9928050,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.631,
+      "ground_truth": [
+        {
+          "threat_class": "PORT_SCAN",
+          "src": "10.0.0.66",
+          "dst": "*",
+          "start_epoch": 1756200150.0,
+          "end_epoch": 1756200163.2,
+          "note": "vertical + horizontal sweep, ~300 ports across 42 hosts"
+        }
+      ]
+    },
+    "beacon.pcap": {
+      "packets": 16848,
+      "duration_s": 300.028,
+      "bytes": 9900276,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.028,
+      "ground_truth": [
+        {
+          "threat_class": "C2_BEACON",
+          "src": "10.0.0.77",
+          "dst": "185.199.110.153",
+          "start_epoch": 1756200020.0,
+          "end_epoch": 1756200297.068,
+          "note": "14 check-ins at 20s +/-1.5s"
+        }
+      ]
+    },
+    "dns_tunnel.pcap": {
+      "packets": 17274,
+      "duration_s": 300.538,
+      "bytes": 10099919,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.538,
+      "ground_truth": [
+        {
+          "threat_class": "DNS_ANOMALY",
+          "src": "10.0.0.88",
+          "dst": "x7k2q-tunnel.net",
+          "start_epoch": 1756200060.0,
+          "end_epoch": 1756200150.307,
+          "note": "108 tunnelling queries, 40-52 char high-entropy labels"
+        }
+      ]
+    },
+    "exfil.pcap": {
+      "packets": 21783,
+      "duration_s": 300.366,
+      "bytes": 15853230,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.366,
+      "ground_truth": [
+        {
+          "threat_class": "EXFIL",
+          "src": "10.0.0.99",
+          "dst": "45.83.91.22",
+          "start_epoch": 1756200120.0,
+          "end_epoch": 1756200250.071,
+          "note": "5.7 MB outbound over 130s, minimal inbound"
+        }
+      ]
+    },
+    "mixed.pcap": {
+      "packets": 52786,
+      "duration_s": 300.731,
+      "bytes": 17440087,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.731,
+      "ground_truth": [
+        {
+          "threat_class": "SYN_FLOOD",
+          "src": "*",
+          "dst": "10.0.1.10",
+          "start_epoch": 1756200090.0,
+          "end_epoch": 1756200110.0,
+          "note": "spoofed-source SYN flood, ~1500 pkt/s for 20s"
+        },
+        {
+          "threat_class": "PORT_SCAN",
+          "src": "10.0.0.66",
+          "dst": "*",
+          "start_epoch": 1756200150.0,
+          "end_epoch": 1756200163.2,
+          "note": "vertical + horizontal sweep, ~300 ports across 42 hosts"
+        },
+        {
+          "threat_class": "C2_BEACON",
+          "src": "10.0.0.77",
+          "dst": "185.199.110.153",
+          "start_epoch": 1756200020.0,
+          "end_epoch": 1756200297.068,
+          "note": "14 check-ins at 20s +/-1.5s"
+        },
+        {
+          "threat_class": "DNS_ANOMALY",
+          "src": "10.0.0.88",
+          "dst": "x7k2q-tunnel.net",
+          "start_epoch": 1756200060.0,
+          "end_epoch": 1756200150.307,
+          "note": "108 tunnelling queries, 40-52 char high-entropy labels"
+        },
+        {
+          "threat_class": "EXFIL",
+          "src": "10.0.0.99",
+          "dst": "45.83.91.22",
+          "start_epoch": 1756200120.0,
+          "end_epoch": 1756200250.071,
+          "note": "5.7 MB outbound over 130s, minimal inbound"
+        }
+      ]
+    }
+  }
+}

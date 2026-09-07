@@ -1,0 +1,7 @@
+# The detection path alone: what the isolated container installs.
+# No web framework, no scapy, no HTTP client. If this list grows a networking
+# dependency, tools/isolation_check.py fails the build.
+dpkt==1.9.8            # pure-Python packet parser: decodes bytes, opens nothing
+numpy==2.5.2
+scikit-learn==1.9.0
+joblib==1.5.3
