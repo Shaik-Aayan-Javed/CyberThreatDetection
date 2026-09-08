@@ -29,7 +29,8 @@ os.chdir(_ROOT)
 
 import engine  # noqa: E402
 from alerts.schema import (  # noqa: E402
-    ANOMALOUS_FLOW, C2_BEACON, DNS_ANOMALY, EXFIL, PORT_SCAN, SYN_FLOOD, UDP_AMPLIFICATION,
+    ANOMALOUS_FLOW, C2_BEACON, DNS_ANOMALY, EXFIL, PORT_SCAN, SYN_FLOOD, TLS_MALWARE,
+    UDP_AMPLIFICATION,
 )
 
 REQUIRED_FIELDS = ["timestamp", "flow_id", "threat_class", "confidence", "severity", "evidence"]
@@ -41,6 +42,7 @@ EXPECTED = {
     "dns_tunnel.pcap": DNS_ANOMALY,
     "exfil.pcap": EXFIL,
     "udp_amp.pcap": UDP_AMPLIFICATION,
+    "tls_malware.pcap": TLS_MALWARE,
 }
 
 results: list[tuple[bool, str]] = []
@@ -93,7 +95,7 @@ def main() -> int:
               f"{len([a for a in got if a.threat_class == cls])} alert(s)")
 
     check(len(seen & set(EXPECTED.values())) == len(EXPECTED),
-          "All six classes fire on the combined capture",
+          "All seven classes fire on the combined capture",
           ", ".join(sorted(seen)))
 
     print("\nFALSE POSITIVES")

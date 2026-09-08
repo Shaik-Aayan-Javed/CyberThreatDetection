@@ -7,7 +7,7 @@ reviewer to find.
 Line references are to modules and functions rather than absolute line numbers,
 because several of these have been fixed and the numbers have moved.
 
-**Status summary — 8 fixed, 15 open.**
+**Status summary — 9 fixed, 16 open.**
 
 | # | Defect | Layer | Severity | Status |
 |---|---|---|---|---|
@@ -34,6 +34,8 @@ because several of these have been fixed and the numbers have moved.
 | 21 | Amplification ratio is unrepresentable | features | Medium | **Fixed** |
 | 22 | DGA and tunnelling indistinguishable to a machine | detectors | Medium | Open |
 | 23 | `spoofed` is a label, not a gate | detectors | Medium | Open |
+| 24 | Raw-IP link types read as zero packets, silently | ingest | High | **Fixed** |
+| 25 | TLS record padding defeats the size gate | detectors | Medium | Open |
 
 Several open defects — 11, 17, 19 and part of 16 — have **zero observable
 impact on the synthetic captures** and pass every check in `tools/selftest.py`.
@@ -260,6 +262,44 @@ in the detector's own docstring rather than silently shipped. See defect 13
 for the remaining, narrower gap this does *not* close: generic non-reflection
 UDP/ICMP floods.
 
+### 24. Raw-IP link types read as zero packets, silently *(High)*
+
+**What.** `ingest/reader.py:parse()` dispatched on link type, handling
+`DLT_EN10MB` (1), `DLT_RAW` (12), 101 and `DLT_LINUX_SLL` (113). Link type
+**228 (`DLT_IPV4`)** — a bare IP packet with no link-layer header — was not
+handled and fell through to the `else` branch, which tries
+`dpkt.ethernet.Ethernet(buf)`.
+
+**Why.** The fallback branch is not a fallback. Parsing a bare IPv4 packet as an
+Ethernet frame consumes the first 14 bytes as a fake MAC header and yields
+something that is not a `dpkt.ip.IP`, so the very next line
+(`if not isinstance(ip, (dpkt.ip.IP, dpkt.ip6.IP6)): return None`) discards it.
+Every packet in the file, one at a time, with no error.
+
+**Impact.** A whole capture read as **zero packets**. Not a degraded parse — a
+silent, total one. `tcpdump` writes 228 for tunnel and loopback interfaces, and
+3 of the 11 third-party captures we tested against used it. Any deployment
+capturing from a tunnel interface would have produced an empty, confidently
+green run. The malformed counter does not catch it either, because these frames
+are dropped as "not IP" rather than counted (see defect 16).
+
+**Fix (applied).** `_RAW_IP_LINKTYPES = (DLT_RAW, 101, 12, 228)`, plus a
+separate branch for 229 (`DLT_IPV6`). Two adjacent holes were found and closed
+in the same pass: DLT_RAW carries v4 *or* v6 and only the version nibble says
+which, so the branch now dispatches on it rather than assuming IPv4; and
+link type 276 (`DLT_LINUX_SLL2`), which `tcpdump -i any` writes on libpcap
+≥ 1.10 — Ubuntu 22.04 and Debian 12 onward — was failing the same way.
+Verified: `tls-fragmented-handshakes.pcap` went from **0 packets to 589**, and
+from 0 to 100 TLS handshake records read.
+
+*How it was found.* Not by review, and not by any check in this repository —
+every capture we author is `DLT_EN10MB`, so the entire test suite was structurally
+incapable of seeing it. It surfaced within minutes of running
+`tools/tls_validate.py` against public Wireshark test captures. That is the
+argument for validating against traffic you did not write, and it generalises
+beyond this defect: our own captures can only ever confirm the assumptions we
+already made.
+
 ---
 
 ## Open
@@ -437,6 +477,31 @@ flood cannot be identified at all, because the rate gate rejects it first.
 mitigation, give spread its own evidence entry with an explicit threshold, and
 consider letting high spread lower the rate threshold. That last part is the most
 likely way to break the zero-false-positive result and must be measured first.
+
+### 25. TLS record padding defeats the size gate *(Medium)*
+
+**What.** `detectors/tlsmalware.py` requires **both** a periodic record-size
+sequence and a regular arrival beat. TLS 1.3 record padding (RFC 8446 §5.4) lets
+a sender pad any record to an arbitrary length, which destroys the size
+sequence while leaving the timing untouched.
+
+**Why.** Padding is a protocol feature that exists specifically to blur traffic
+analysis. The size gate reads exactly the quantity padding is designed to
+obscure.
+
+**Impact.** An implant that pads its records is missed, and the cost to the
+attacker is one line of code and some bandwidth. The timing gate still holds, but
+because both gates are required, one is enough to evade. This is a real ceiling
+on the detector, not a tuning problem.
+
+**Fix.** Either let strong timing regularity alone fire at reduced confidence
+(which trades directly against the zero-false-positive result and must be
+measured before it is adopted, not after), or add a JA4-style sorted-list
+fingerprint plus record-count-per-burst as a third signal. Related: a
+ClientHello split across TCP segments is not reassembled, so its fingerprint is
+not recovered — the size and timing analysis is unaffected, since it reads
+record headers rather than the handshake, and JA3 is evidence rather than a gate.
+Full reassembly is unbounded state and needs the caps defect 1 describes.
 
 ---
 

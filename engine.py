@@ -31,6 +31,7 @@ from detectors.dns import DnsAnomalyDetector
 from detectors.exfil import ExfilDetector
 from detectors.portscan import PortScanDetector
 from detectors.synflood import SynFloodDetector
+from detectors.tlsmalware import TlsMalwareDetector
 from detectors.udpamp import UdpAmplificationDetector
 from features.baseline import BaselineTracker
 from features.extract import WindowFeatures, extract
@@ -92,6 +93,7 @@ def build_detectors(model_path: str | None = DEFAULT_MODEL_PATH,
         PortScanDetector(),
         BeaconDetector(),
         DnsAnomalyDetector(),
+        TlsMalwareDetector(),
         ExfilDetector(),
     ]
     if enable_anomaly:

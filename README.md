@@ -5,7 +5,7 @@ copied one-way into a monitoring enclave.
 
 A gateway link is mirrored into an enclave that can see every packet and has no
 route back. This prototype turns that one-way stream into explained alerts:
-six behavioural detectors plus an unsupervised anomaly model, running as a
+seven behavioural detectors plus an unsupervised anomaly model, running as a
 streaming pipeline, with the isolation constraint proven mechanically rather
 than asserted on a slide.
 
@@ -13,7 +13,7 @@ than asserted on a slide.
 py -3.13 -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 
-python data/generate.py --seed 42      # 8 labelled captures, 231,293 packets
+python data/generate.py --seed 42      # 9 labelled captures, 258,529 packets
 python train.py                        # fit + calibrate + validate the model
 python engine.py data/pcaps/mixed.pcap --pretty
 python server.py                       # then open http://127.0.0.1:8000
@@ -24,7 +24,7 @@ python server.py                       # then open http://127.0.0.1:8000
 ## What it detects
 
 Measured against the PS threat list clause by clause: **five classes complete,
-one absent.** The per-class breakdown and the evidence for each verdict are in
+one partial.** The per-class breakdown and the evidence for each verdict are in
 [docs/CONFORMANCE.md](docs/CONFORMANCE.md).
 
 Each detector fires on a distinct behavioural signal. Thresholds are multiples
@@ -40,9 +40,10 @@ floor is what is actually in effect.
 | `DNS_ANOMALY` | QNAME character entropy + bigram plausibility against a real-domain corpus, label length, TXT/NULL ratio — over UDP/53, TCP/53, mDNS, and LLMNR | `detectors/dns.py` |
 | `EXFIL` | outbound:inbound byte ratio to a single destination, sustained | `detectors/exfil.py` |
 | `UDP_AMPLIFICATION` | aggregate inbound byte rate on known reflector ports (DNS/NTP/SSDP/memcached/...) vs baseline, plus distinct-reflector cardinality | `detectors/udpamp.py` |
+| `TLS_MALWARE` | repeating period in the TLS record-size sequence plus a regular arrival beat, read *inside* one session; JA3 fingerprint reported as evidence, never as a gate | `detectors/tlsmalware.py` |
 | `ANOMALOUS_FLOW` | IsolationForest on 10 per-host features, trained on benign traffic only | `detectors/anomaly.py` |
 
-**One gap, stated plainly:**
+**One partial class, stated plainly:**
 
 **PS class (a) is now complete.** It names three attack shapes — SYN floods,
 spoofed floods, and UDP reflection/amplification — and all three are now
@@ -55,14 +56,36 @@ allowlist of reflector ports, plus a minimum distinct-reflector count so one
 legitimate DNS resolver never looks like an attack. See `docs/DEFECTS.md` #21
 (fixed) for the full writeup.
 
-**PS class (d) — malware in encrypted sessions — is not built.** Note what it
-actually asks for: detection from TLS/QUIC *metadata alone* (JA3/JA3S/JA4,
-packet-size and timing sequences), explicitly **without** decrypting payload. So
-constraint (b)'s no-decryption rule is not the reason we skipped it — the class
-never required decryption, and citing that rule would be a misreading. The real
-reason is time, plus the judgement that a JA3 rarity score computed against
-fingerprints we invented ourselves would demonstrate plumbing rather than
-detection. It is the first extension seam, not a claimed capability.
+**PS class (d) — malware in encrypted sessions — is partial: TLS yes, QUIC no.**
+The class asks for detection from TLS/QUIC *metadata alone* (JA3/JA3S/JA4,
+packet-size and timing sequences), explicitly **without** decrypting payload —
+so constraint (b) was never the reason to skip it. `ingest/reader.py` now parses
+TLS record headers and computes JA3 from the cleartext ClientHello;
+`detectors/tlsmalware.py` reads the record-size and timing sequences *inside* a
+session. QUIC is not built: its Initial-packet headers are protected with a key
+derived from the connection ID, and recovering them sits closer to decryption
+than to header parsing.
+
+**The fingerprint deliberately does not gate.** The obvious design — "rare JA3
+equals malware" — fails on real traffic, because JA3 is order-sensitive and
+Chrome ≥ 110 permutes ClientHello extension order per connection. We measured
+it rather than assuming: across 11 public captures, 3 of 6 real client hosts
+presented more than one fingerprint and one presented 8. Both gates are
+therefore behavioural, and JA3 is reported as evidence for an analyst to pivot
+on. That also answers the objection this README used to raise against building
+the class at all — the detection logic does not depend on our having guessed
+real-world fingerprints correctly.
+
+**It is cross-validated on traffic we did not author.**
+`python tools/tls_validate.py <capture.pcap>` runs the extractor and the full
+engine over any third-party capture. On 11 public Wireshark test captures: 51
+ClientHellos fingerprinted out of 166 handshake records, 18 distinct
+fingerprints, real SNI values, **0 alerts of any class**. The shortfall is the
+reassembly limit reported honestly — a ClientHello split across segments gets no
+fingerprint rather than a fabricated one. It also surfaced a genuine ingest bug — link type 228 (raw IPv4,
+which `tcpdump` writes for tunnel interfaces) was unhandled, so such captures
+read as *zero packets*, silently. Every capture we generate is Ethernet, so no
+test in this repository could have caught it. Fixed; `docs/DEFECTS.md` #24.
 
 ## Measured results
 
@@ -70,7 +93,7 @@ All numbers below come from `tools/selftest.py`, `bench/metrics.py` and
 `bench/throughput.py` on this machine. Nothing here is illustrative.
 
 **Detection** (`docs/metrics.json`) — per-class precision / recall / F1 = 1.00
-across all six *implemented* classes, macro-F1 **1.00**, and:
+across all seven *implemented* classes, macro-F1 **1.00**, and:
 
 ```
 false positives on 16,701 packets of purely benign traffic:  0
@@ -85,31 +108,39 @@ of a low false-alarm rate in the field.
 
 **Detection latency**, first alert after attack onset: 5 s for `SYN_FLOOD`,
 `PORT_SCAN`, `DNS_ANOMALY`, `UDP_AMPLIFICATION` (one window), 45 s for `EXFIL`,
-140 s for `C2_BEACON`. The slow two are inherent — a beacon is not a beacon
-until enough intervals exist to measure regularity, and calling it earlier
-would mean calling it on two packets.
+140 s for `C2_BEACON`, 145 s for `TLS_MALWARE`. The slow ones are inherent — a
+beacon is not a beacon until enough intervals exist to measure regularity, and
+a record sequence is not periodic until enough records exist to repeat. Calling
+either earlier would mean calling it on two packets.
 
 **Throughput** (`docs/throughput.json`), median of 3 runs, full pipeline with
 the anomaly model loaded:
 
 | Capture | packets/s | Mbit/s | flows/s | vs real time |
 |---|---|---|---|---|
-| `mixed.pcap` | 14,959 | 53.1 | 10,187 | **69×** |
-| `synflood.pcap` | 12,737 | 25.6 | 8,520 | 81× |
+| `mixed.pcap` | 9,318 | 33.8 | 5,890 | **40×** |
+| `synflood.pcap` | 16,140 | 32.4 | 10,796 | 102× |
 
 Hardware: `Intel64 Family 6 Model 170` (Meteor Lake), 18 logical cores,
 Windows 11, CPython 3.13 — single process, one core doing the work, no GPU.
 
 **Caveat on these two figures specifically**: measured on a dev machine with
-other applications running, and re-running `bench/throughput.py` three times
-in a row during this pass produced real-time multiples ranging from 33× to
-91× for the same two captures — too wide a spread to attribute confidently to
-the sixth detector rather than run-to-run system load (`UdpAmplificationDetector.on_window`
-is structurally a single pass over `wf.by_dst`, the same shape as
-`SynFloodDetector`'s, but that is a code-reading argument, not a profiled
-one). Treat this table as "still comfortably above real time," not as a
-precise headline number — re-measure on an idle machine before quoting a
-specific multiple with confidence.
+other applications running, and repeated runs of `bench/throughput.py` across
+this work produced real-time multiples anywhere from **33× to 102×** for the
+same two captures. The spread is machine noise, not a code change: in the run
+that produced this table `mixed.pcap` got slower while `synflood.pcap` got
+faster, which no single-direction regression explains. Treat the table as
+"comfortably above real time", not as a precise headline number, and re-measure
+on an idle machine before quoting a specific multiple.
+
+The two newest detectors are the ones a reviewer would suspect, so their cost is
+bounded by construction rather than by hope. `UdpAmplificationDetector` is a
+single pass over `wf.by_dst`. `TlsMalwareDetector`'s periodicity search is
+O(n²) in the record count, so it caps both the records per session (128) and the
+sessions examined per window (512, least-recently-examined first) — without
+that second cap, a bounded-memory table of 20,000 armed sessions still costs
+more CPU than a 5-second window contains. That is a code-reading and
+arithmetic argument, not a profiled one, and it is stated as such.
 
 **Model** (`docs/model_report.json`): IsolationForest, 200 trees, 10 features,
 trained on 256 benign windows, never on an attack. Mean ROC-AUC **0.997** across
@@ -134,10 +165,10 @@ the model and where the model genuinely fails.
    │  5s window  │   features/baseline.py  EWMA baselines, winsorized
    └──────┬──────┘
           ▼
-   ┌────────────────────────────────────────────────┐
-   │ synflood  udpamp  portscan  beacon  dns  exfil │  rules → evidence
-   │ anomaly (IsolationForest)                      │  model → corroboration
-   └──────┬─────────────────────────────────────────┘
+   ┌──────────────────────────────────────────────────────┐
+   │ synflood udpamp portscan beacon dns exfil tlsmalware │  rules → evidence
+   │ anomaly (IsolationForest)                            │  model → corroboration
+   └──────┬───────────────────────────────────────────────┘
           ▼
    ┌─────────────┐   alerts/schema.py     confidence computed from evidence
    │   Alert     │───► stdout JSON
@@ -201,7 +232,7 @@ python tools/isolation_check.py
    or calls `connect`/`send`/`urlopen`/`popen`. AST, not grep: `import socket as
    s` and `from socket import *` are caught too.
 2. **Runtime** — a real capture is replayed with `socket.socket` replaced by a
-   subclass whose constructor raises. 64,786 packets, 9 alerts, no socket
+   subclass whose constructor raises. 70,173 packets, 10 alerts, no socket
    constructed.
 3. **File access** — `builtins.open` is wrapped for a full run: the only file
    opened is the capture, mode `rb`.
@@ -221,13 +252,13 @@ reach upstream of it. Full argument, including what none of this proves, in
 data/generate.py       scapy capture synthesis + ground-truth labels, seeded
 ingest/                reader (packets in capture order), flow table
 features/              per-window feature extraction, EWMA baselines
-detectors/             6 behavioural detectors + the anomaly model
+detectors/             7 behavioural detectors + the anomaly model
 alerts/schema.py       Alert dataclass, computed confidence, JSON
 engine.py              the streaming loop
 server.py              FastAPI: WebSocket /stream, /api/alerts, /api/replay
 dashboard/index.html   live alert list + click-through evidence, no build step
 bench/                 throughput and precision/recall harnesses
-tools/selftest.py      20-check acceptance list, executed not ticked
+tools/selftest.py      21-check acceptance list, executed not ticked
 tools/isolation_check.py
 docs/MODEL.md          models, features, training, validation, and limits
 docs/ISOLATION.md      the unidirectional argument and its proofs
@@ -266,26 +297,36 @@ Stated here so a reviewer does not have to find them:
 - **Low-and-slow traffic is below the model's volume floor** (20 packets/window)
   — the beacon and DNS-tunnel hosts are invisible to it and are caught by rules
   alone.
-- **No encrypted-traffic classification (PS class d).** Unbuilt. This is *not*
-  because decryption is out of scope — the class asks for metadata-only
-  analysis. See the reasoning above.
+- **Encrypted-traffic analysis covers TLS but not QUIC (PS class d).** QUIC
+  Initial-packet headers are protected with a key derived from the connection
+  ID; recovering them sits closer to decryption than to header parsing, so it is
+  left out rather than blurring constraint (b). Within TLS: record padding
+  (RFC 8446 §5.4) defeats the size gate in one line of implant code
+  (`docs/DEFECTS.md` #25), a ClientHello split across TCP segments is not
+  reassembled, and no JA3S or JA4.
+- **`normal.pcap` contains no TLS**, so this project's headline
+  zero-false-positive result on that capture says nothing about `TLS_MALWARE`.
+  Its false-positive evidence comes from 11 public captures we did not author
+  (0 alerts) and from the benign TLS deliberately carried inside
+  `tls_malware.pcap` — see `docs/CONFORMANCE.md` class (d).
 - **UDP amplification detection is victim-side only.** A one-way tap can only
   ever observe the reflector→victim leg, never the (external, spoofed)
   attacker→reflector leg — see `docs/DEFECTS.md` #21. A 1-2-reflector attack
   using a small number of very high-potency amplifiers can clear the
   byte-rate gate without reaching the minimum-reflector-count gate; not
   defended against in this pass.
-- **Six of six classes is not claimed.** Five complete, one absent.
+- **Six of six classes is not claimed.** Five complete, one partial.
 - **Known defects.** Every defect found in an internal audit is recorded with
   cause and remedy in [docs/DEFECTS.md](docs/DEFECTS.md), including one that
   affects the anomaly model's training input.
 
 ## Extensions, in priority order
 
-`TLS_MALWARE` via JA3/JA4 from ClientHello metadata (completes the class list) →
-NetFlow/IPFIX ingest alongside PCAP → live SPAN capture (would require
-re-making the layer-1 isolation argument, deliberately) → alert persistence
-and historical query.
+QUIC metadata analysis (the last unbuilt half of a PS class) → JA4 fingerprints,
+whose sorted cipher and extension lists survive the ClientHello permutation that
+makes raw JA3 unstable → NetFlow/IPFIX ingest alongside PCAP → live SPAN capture
+(would require re-making the layer-1 isolation argument, deliberately) → alert
+persistence and historical query.
 
 A note on the second and third of those, because an earlier draft of this README
 oversold them: NetFlow ingest is **not** a drop-in. `engine.run()` hardcodes

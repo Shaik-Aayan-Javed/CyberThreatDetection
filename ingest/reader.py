@@ -11,6 +11,7 @@ detector runs identically on a machine with no capture driver and no network.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import time
 from dataclasses import dataclass
@@ -48,6 +49,14 @@ class Packet:
     # ever decoded or retained. dns_answers feeds amplification analysis.
     dns_qcount: int = 0
     dns_answers: int = 0
+    # TLS record and handshake *header* shape. Cleartext fields only -- no
+    # application data is decoded and no key material is touched, which is what
+    # makes PS class (d) reachable without violating constraint (b).
+    tls_record_type: int = 0  # 0x16 handshake, 0x17 application_data, 0 = not TLS
+    tls_record_len: int = 0  # from the record header, NOT len(payload)
+    tls_ja3: str = ""  # md5 of tls_ja3_string, ClientHello only
+    tls_ja3_string: str = ""  # the pre-hash string, so a fingerprint is auditable
+    tls_sni: str = ""
 
     @property
     def is_syn(self) -> bool:
@@ -68,6 +77,39 @@ _DNS_UDP_PORTS = {53, 5353, 5355}
 _DNS_TCP_PORTS = {53}
 
 _DNS_TYPES = {1: "A", 2: "NS", 5: "CNAME", 10: "NULL", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA"}
+
+# TLS record content types worth recording. 0x16 carries the ClientHello we
+# fingerprint; 0x17 is the steady state of a session, and its record lengths are
+# the "packet-size sequence" PS class (d) asks to be analysed.
+_TLS_HANDSHAKE = 0x16
+_TLS_APPLICATION_DATA = 0x17
+_TLS_CLIENT_HELLO = 0x01
+# RFC 8446 5.1 caps a record at 2^14 plus expansion. Larger means these are
+# bytes that merely happen to begin like a record header.
+_TLS_MAX_RECORD = 16640
+
+_EXT_SERVER_NAME = 0x0000
+_EXT_SUPPORTED_GROUPS = 0x000A
+_EXT_EC_POINT_FORMATS = 0x000B
+
+# Link types carrying a bare IP packet with no link-layer header. DLT_RAW is 12
+# and 101 is the same thing on several BSDs; 228/229 are DLT_IPV4/DLT_IPV6,
+# which tcpdump writes for tunnel and loopback interfaces. Missing 228 meant
+# every packet of such a capture fell through to the Ethernet branch, produced
+# no IP layer and was dropped -- a whole file read as zero packets, silently.
+# Found by running tools/tls_validate.py against real third-party captures.
+_RAW_IP_LINKTYPES = (dpkt.pcap.DLT_RAW, 101, 12, 228)
+_DLT_IPV6 = 229
+# tcpdump -i any writes SLL2 (276), not SLL (113), on libpcap >= 1.10 --
+# Ubuntu 22.04 and Debian 12 onwards. Same silent-whole-file-loss shape.
+_DLT_LINUX_SLL2 = 276
+
+# A real ClientHello offers tens of ciphers and extensions, not thousands. The
+# cap keeps a hostile handshake from producing a ja3_string tens of kilobytes
+# long, which would then be retained per session and interpolated into alert
+# JSON -- bounding the number of tracked sessions is no use if one session can
+# hold megabytes.
+_MAX_JA3_FIELDS = 256
 
 
 def _ip_str(raw: bytes) -> str:
@@ -92,10 +134,17 @@ def parse(ts: float, buf: bytes, linktype: int = dpkt.pcap.DLT_EN10MB) -> Packet
         if linktype == dpkt.pcap.DLT_EN10MB:
             eth = dpkt.ethernet.Ethernet(buf)
             ip = eth.data
-        elif linktype in (dpkt.pcap.DLT_RAW, 101, 12):
-            ip = dpkt.ip.IP(buf)
+        elif linktype in _RAW_IP_LINKTYPES:
+            # A bare IP packet is v4 or v6 and nothing but the version nibble
+            # says which. Assuming v4 loses every IPv6 capture silently, which
+            # is the same failure this branch was just fixed for.
+            ip = dpkt.ip6.IP6(buf) if buf and (buf[0] >> 4) == 6 else dpkt.ip.IP(buf)
+        elif linktype == _DLT_IPV6:
+            ip = dpkt.ip6.IP6(buf)
         elif linktype == dpkt.pcap.DLT_LINUX_SLL:
             ip = dpkt.sll.SLL(buf).data
+        elif linktype == _DLT_LINUX_SLL2:
+            ip = dpkt.sll2.SLL2(buf).data
         else:
             eth = dpkt.ethernet.Ethernet(buf)
             ip = eth.data
@@ -120,6 +169,8 @@ def parse(ts: float, buf: bytes, linktype: int = dpkt.pcap.DLT_EN10MB) -> Packet
                 # RFC 1035 §4.2.2: TCP DNS messages carry a 2-byte big-endian
                 # length prefix that UDP messages do not.
                 _attach_dns(pkt, bytes(l4.data)[2:])
+            elif l4.data:
+                _attach_tls(pkt, bytes(l4.data))
             return pkt
 
         if isinstance(l4, dpkt.udp.UDP):
@@ -179,6 +230,140 @@ def _attach_dns(pkt: Packet, payload: bytes) -> None:
         # Narrow rather than bare: a truncated or non-DNS payload on port 53 is
         # an ordinary observation, but a TypeError from our own code is a bug
         # and should not be laundered into silence.
+        pass
+
+
+def _is_grease(value: int) -> bool:
+    """RFC 8701 GREASE values, which are deliberately random.
+
+    They must be stripped before fingerprinting, or a client never matches even
+    itself from one connection to the next.
+    """
+    return (value & 0x0F0F) == 0x0A0A
+
+
+def _attach_tls(pkt: Packet, payload: bytes) -> None:
+    """Record the TLS record header, and fingerprint a ClientHello.
+
+    Deliberately port-agnostic. Gating on 443 would miss the 8443 sessions this
+    project's own generator already produces, and any implant that picks another
+    port -- the same mistake detectors/udpamp.py documents for per-port gates.
+    Five byte comparisons is cheap enough to run on every TCP payload.
+    """
+    if len(payload) < 5:
+        return
+    ctype = payload[0]
+    if ctype not in (_TLS_HANDSHAKE, _TLS_APPLICATION_DATA):
+        return
+    # The legacy record version is 0x03XX for TLS 1.0 through 1.3.
+    if payload[1] != 0x03 or payload[2] > 0x04:
+        return
+    rec_len = (payload[3] << 8) | payload[4]
+    if rec_len == 0 or rec_len > _TLS_MAX_RECORD:
+        return
+
+    pkt.tls_record_type = ctype
+    # The header's length field, not len(payload). L4 payload size is a function
+    # of MSS, segmentation and GRO offload, so it describes the network path;
+    # the record length is the size the application actually chose, which is the
+    # only one a size-sequence analysis can read anything into.
+    pkt.tls_record_len = rec_len
+
+    if ctype != _TLS_HANDSHAKE or len(payload) < 9 or payload[5] != _TLS_CLIENT_HELLO:
+        return
+    # Only fingerprint a handshake we have in full. A ClientHello larger than
+    # one segment is routine on modern stacks (a post-quantum key_share alone
+    # pushes it past a 1460-byte MSS), and parsing the fragment we happened to
+    # receive yields a *plausible but wrong* JA3 -- one that appears in no
+    # corpus, defeating the pivoting the fingerprint exists for, and minting a
+    # fresh ja3_hosts key at every segmentation boundary. Recording no
+    # fingerprint is the honest outcome; the size and timing analysis is
+    # unaffected, since it reads record headers rather than the handshake.
+    hs_len = (payload[6] << 16) | (payload[7] << 8) | payload[8]
+    if 9 + hs_len > len(payload) or 5 + rec_len > len(payload):
+        return
+    _attach_ja3(pkt, payload, 9 + hs_len)
+
+
+def _attach_ja3(pkt: Packet, payload: bytes, limit: int) -> None:
+    """Build the JA3 fingerprint from a ClientHello's cleartext header fields.
+
+    JA3 is md5 of "version,ciphers,extensions,curves,point_formats". Everything
+    read here is sent in the clear before any key exchange completes, so this is
+    byte parsing rather than decryption.
+
+    The narrow except is load-bearing rather than defensive habit: letting a
+    truncated handshake raise into parse()'s catch-all would discard the whole
+    packet and count it malformed, which is the silent-traffic-loss mechanism
+    docs/DEFECTS.md #18 describes.
+    """
+    try:
+        pos = 9  # 5-byte record header + 4-byte handshake header
+        if len(payload) < pos + 2:
+            return
+        version = (payload[pos] << 8) | payload[pos + 1]
+        pos += 2 + 32  # client_version, then the 32-byte random
+
+        if len(payload) < pos + 1:
+            return
+        pos += 1 + payload[pos]  # session_id
+
+        if len(payload) < pos + 2:
+            return
+        cs_len = (payload[pos] << 8) | payload[pos + 1]
+        pos += 2
+        ciphers = [
+            (payload[i] << 8) | payload[i + 1]
+            for i in range(pos, min(pos + cs_len, limit - 1), 2)
+        ][:_MAX_JA3_FIELDS]
+        pos += cs_len
+
+        if len(payload) < pos + 1:
+            return
+        pos += 1 + payload[pos]  # compression_methods
+
+        exts: list[int] = []
+        curves: list[int] = []
+        formats: list[int] = []
+        sni = ""
+
+        if len(payload) >= pos + 2:
+            ext_total = (payload[pos] << 8) | payload[pos + 1]
+            pos += 2
+            end = min(pos + ext_total, limit)
+            while pos + 4 <= end and len(exts) < _MAX_JA3_FIELDS:
+                etype = (payload[pos] << 8) | payload[pos + 1]
+                elen = (payload[pos + 2] << 8) | payload[pos + 3]
+                pos += 4
+                body = payload[pos:pos + elen]
+                pos += elen
+                exts.append(etype)
+                if etype == _EXT_SUPPORTED_GROUPS and len(body) >= 2:
+                    n = (body[0] << 8) | body[1]
+                    curves = [
+                        (body[i] << 8) | body[i + 1]
+                        for i in range(2, min(2 + n, len(body) - 1), 2)
+                    ][:_MAX_JA3_FIELDS]
+                elif etype == _EXT_EC_POINT_FORMATS and body:
+                    formats = list(body[1:1 + body[0]])[:_MAX_JA3_FIELDS]
+                elif etype == _EXT_SERVER_NAME and len(body) >= 5:
+                    nlen = (body[3] << 8) | body[4]
+                    sni = body[5:5 + nlen].decode("ascii", errors="replace")
+
+        ja3 = ",".join([
+            str(version),
+            "-".join(str(c) for c in ciphers if not _is_grease(c)),
+            "-".join(str(e) for e in exts if not _is_grease(e)),
+            "-".join(str(c) for c in curves if not _is_grease(c)),
+            # Point formats are single bytes and cannot collide with GREASE.
+            "-".join(str(f) for f in formats),
+        ])
+        # usedforsecurity=False because this is a fingerprint, not a security
+        # hash -- without it a FIPS-mode build raises ValueError on md5().
+        pkt.tls_ja3 = hashlib.md5(ja3.encode(), usedforsecurity=False).hexdigest()
+        pkt.tls_ja3_string = ja3
+        pkt.tls_sni = sni
+    except (IndexError, ValueError, struct.error):
         pass
 
 

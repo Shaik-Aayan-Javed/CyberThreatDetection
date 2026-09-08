@@ -1,13 +1,16 @@
 """Per-window feature extraction.
 
-Everything downstream -- all five rule detectors and the anomaly model -- reads
+Everything downstream -- every rule detector and the anomaly model -- reads
 the structures built here. Features are computed once per window and shared, so
 adding a detector costs nothing extra at ingest time.
 
 All features are derived from packet headers and flow metadata only. Nothing in
 this file inspects application payload, and nothing decrypts anything
 (PS 26145 constraint b). DNS QNAMEs are read from the query section, which is
-cleartext by protocol design -- that is metadata, not decryption.
+cleartext by protocol design -- that is metadata, not decryption. The same
+applies to TLS: record headers and the ClientHello are sent before any key
+exchange completes, so reading their lengths and offered ciphers is byte
+parsing, not decryption.
 """
 
 from __future__ import annotations
@@ -36,6 +39,17 @@ AMPLIFICATION_PORTS = {53, 123, 1900, 11211, 19, 17, 161, 111, 389}
 # pathological window (the attack this detector exists to catch) could still
 # spike memory before that reset -- this bounds that spike.
 MAX_REFLECTORS_TRACKED = 20_000
+
+# Caps on the per-window TLS session index, same reasoning as above: a window's
+# state is discarded on the next extract() call, but one pathological window
+# must not be able to spike memory before that happens.
+MAX_TLS_SESSIONS = 20_000
+# Deliberately well under detectors/tlsmalware.py's MAX_STREAM_RECORDS (128),
+# which is the cross-window deque these feed. If one window could contribute
+# more records than that deque holds, a single chatty window would evict every
+# earlier window's history -- and the detector's whole premise is that a
+# session's shape is only visible across windows.
+MAX_TLS_RECORDS_PER_SESSION = 64
 
 
 def shannon_entropy(counts) -> float:
@@ -170,6 +184,29 @@ class TargetFeatures:
 
 
 @dataclass
+class TlsSession:
+    """TLS records seen in one direction of one connection, within one window.
+
+    Keyed on the full directional 4-tuple rather than (src, dst, dport). A
+    browser routinely opens six parallel connections to the same server; folding
+    them into one series would interleave three independent conversations and
+    manufacture a period that no single session actually has. The same key also
+    keeps sequential unrelated sessions to one server from being concatenated.
+    """
+
+    src: str
+    sport: int
+    dst: str
+    dport: int
+    # (timestamp, record length from the TLS header). Never payload bytes.
+    records: list[tuple[float, int]] = field(default_factory=list)
+    ja3: str = ""
+    ja3_string: str = ""
+    sni: str = ""
+    saw_client_hello: bool = False
+
+
+@dataclass
 class WindowFeatures:
     window: Window
     duration: float
@@ -185,6 +222,10 @@ class WindowFeatures:
     syn: int = 0
     synack: int = 0
     dns_queries: int = 0
+    # Directional 4-tuple -> TlsSession. A session outlives a window, so the
+    # detector stitches these together across windows; this is only the slice
+    # observed here.
+    tls_sessions: dict[tuple[str, int, str, int], TlsSession] = field(default_factory=dict)
 
     @property
     def pps(self) -> float:
@@ -202,6 +243,7 @@ def extract(window: Window) -> WindowFeatures:
 
     by_host: dict[str, HostFeatures] = {}
     by_dst: dict[str, TargetFeatures] = {}
+    tls_sessions: dict[tuple[str, int, str, int], TlsSession] = {}
 
     for pkt in window.packets:
         wf.packets += 1
@@ -264,6 +306,24 @@ def extract(window: Window) -> WindowFeatures:
             elif pkt.is_rst:
                 dst.rst_out += 1
                 peer.rst_recv += 1
+            # TLS is collected by record type, not by port -- reader.py sniffs
+            # the record header on any TCP payload, so a session on 8443 or an
+            # implant's arbitrary port lands here the same as one on 443.
+            if pkt.tls_record_type:
+                tkey = (pkt.src, pkt.sport, pkt.dst, pkt.dport)
+                sess = tls_sessions.get(tkey)
+                if sess is None and len(tls_sessions) < MAX_TLS_SESSIONS:
+                    sess = tls_sessions[tkey] = TlsSession(
+                        src=pkt.src, sport=pkt.sport, dst=pkt.dst, dport=pkt.dport
+                    )
+                if sess is not None:
+                    if len(sess.records) < MAX_TLS_RECORDS_PER_SESSION:
+                        sess.records.append((pkt.ts, pkt.tls_record_len))
+                    if pkt.tls_ja3 and not sess.saw_client_hello:
+                        sess.saw_client_hello = True
+                        sess.ja3 = pkt.tls_ja3
+                        sess.ja3_string = pkt.tls_ja3_string
+                        sess.sni = pkt.tls_sni
         elif pkt.proto == "UDP":
             wf.udp += 1
             src.udp += 1
@@ -289,6 +349,7 @@ def extract(window: Window) -> WindowFeatures:
 
     wf.by_host = by_host
     wf.by_dst = by_dst
+    wf.tls_sessions = tls_sessions
     return wf
 
 

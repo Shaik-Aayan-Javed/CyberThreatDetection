@@ -1,6 +1,6 @@
 """The machine-learning component: unsupervised anomaly scoring.
 
-Why it exists, plainly: the five rule detectors above encode threats we already
+Why it exists, plainly: the rule detectors alongside it encode threats we already
 know how to describe. This model encodes what *normal* looks like on this link,
 so traffic that is merely strange still surfaces. It complements the evidence;
 it never overrides it.

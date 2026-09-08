@@ -53,6 +53,15 @@
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
+    },
+    "TLS_MALWARE": {
+      "tp": 2,
+      "fp": 0,
+      "episodes": 2,
+      "detected": 2,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
     }
   },
   "captures": {
@@ -105,12 +114,19 @@
       "anomaly_alerts": 1,
       "matched_alerts": 1
     },
+    "tls_malware.pcap": {
+      "packets": 21849,
+      "episodes": 1,
+      "rule_alerts": 1,
+      "anomaly_alerts": 0,
+      "matched_alerts": 1
+    },
     "mixed.pcap": {
-      "packets": 64786,
-      "episodes": 6,
-      "rule_alerts": 8,
+      "packets": 70173,
+      "episodes": 7,
+      "rule_alerts": 9,
       "anomaly_alerts": 1,
-      "matched_alerts": 8
+      "matched_alerts": 9
     }
   },
   "benign_false_positives": 0,
@@ -151,6 +167,11 @@
       "latency_s": 5.0
     },
     {
+      "capture": "tls_malware.pcap",
+      "threat_class": "TLS_MALWARE",
+      "latency_s": 145.0
+    },
+    {
       "capture": "mixed.pcap",
       "threat_class": "SYN_FLOOD",
       "latency_s": 5.0
@@ -179,6 +200,11 @@
       "capture": "mixed.pcap",
       "threat_class": "UDP_AMPLIFICATION",
       "latency_s": 5.0
+    },
+    {
+      "capture": "mixed.pcap",
+      "threat_class": "TLS_MALWARE",
+      "latency_s": 145.0
     }
   ],
   "macro": {
@@ -189,6 +215,6 @@
   "latency_summary": {
     "min_s": 5.0,
     "median_s": 5.0,
-    "max_s": 140.0
+    "max_s": 145.0
   }
 }

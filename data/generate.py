@@ -264,6 +264,221 @@ def gen_udp_amplification(rng: random.Random, start: float = 250.0, duration: fl
     return cap
 
 
+# --- TLS wire helpers -------------------------------------------------------
+# Hand-rolled rather than via scapy.layers.tls, because the whole point is to
+# control the exact ClientHello bytes that produce a given JA3. A library that
+# chose cipher order for us would defeat the exercise.
+
+# RFC 5737 TEST-NET-3, reserved for documentation. Deliberately not routable: a
+# fictional C2 in a public repository should not be somebody's real host.
+TLS_C2_IP = "203.0.113.47"
+
+
+def tls_record(content_type: int, body_len: int) -> bytes:
+    """A TLS record header plus filler. The header length is what we detect on."""
+    return bytes([content_type, 0x03, 0x03]) + body_len.to_bytes(2, "big") + b"\x00" * body_len
+
+
+def client_hello(ciphers, ext_order, curves, formats, sni: str = "",
+                 version: int = 0x0303) -> bytes:
+    """Assemble a ClientHello whose JA3 is fully determined by the arguments."""
+    body = version.to_bytes(2, "big") + b"\xAB" * 32 + b"\x00"
+    body += (len(ciphers) * 2).to_bytes(2, "big")
+    body += b"".join(c.to_bytes(2, "big") for c in ciphers)
+    body += b"\x01\x00"  # one compression method, null
+
+    blob = b""
+    for et in ext_order:
+        if et == 0x0000 and sni:
+            name = sni.encode()
+            eb = (len(name) + 3).to_bytes(2, "big") + b"\x00" + len(name).to_bytes(2, "big") + name
+        elif et == 0x000A:
+            eb = (len(curves) * 2).to_bytes(2, "big") + b"".join(c.to_bytes(2, "big") for c in curves)
+        elif et == 0x000B:
+            eb = bytes([len(formats)]) + bytes(formats)
+        else:
+            eb = b""
+        blob += et.to_bytes(2, "big") + len(eb).to_bytes(2, "big") + eb
+    body += len(blob).to_bytes(2, "big") + blob
+
+    hs = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x01" + len(hs).to_bytes(2, "big") + hs
+
+
+# Three benign client profiles, so the capture carries a fingerprint population
+# rather than one template. Illustrative of the general shape of mainstream TLS
+# stacks -- NOT captured from real software, and the docs say so rather than
+# implying we fingerprinted real browsers.
+BENIGN_PROFILES = [
+    ([0x1301, 0x1302, 0x1303, 0xC02B, 0xC02F, 0xC02C, 0xC030, 0x009C],
+     [0x0000, 0x0017, 0x000A, 0x000B, 0x0010, 0x0005, 0x000D, 0x0012, 0x002B, 0x0033],
+     [0x001D, 0x0017, 0x0018], [0]),
+    ([0x1301, 0x1303, 0x1302, 0xC02C, 0xC030, 0xC02B, 0xC02F, 0x009D, 0x009C],
+     [0x0000, 0x000A, 0x000B, 0x000D, 0x0010, 0x002B, 0x0033, 0x001B],
+     [0x001D, 0x0017], [0]),
+    ([0xC02B, 0xC02F, 0xC02C, 0xC030, 0x009C, 0x009D, 0x002F, 0x0035],
+     [0x0000, 0x000A, 0x000B, 0x000D, 0x0010, 0x0017],
+     [0x0017, 0x0018, 0x0019], [0, 1, 2]),
+]
+
+# The implant: an old TLS version, a short idiosyncratic cipher list, almost no
+# extensions, no SNI. Reported as evidence only -- none of this gates.
+MALWARE_PROFILE = ([0xC014, 0xC013, 0x0035, 0x002F, 0x000A],
+                   [0x000A, 0x000B, 0x0023],
+                   [0x0017, 0x0018], [0])
+
+
+def _tls_open(cap, rng, host_id, client, server, cport, dport, t, hello):
+    """Three-way handshake followed by the ClientHello."""
+    seq, ack = rng.randint(0, 2**31), rng.randint(0, 2**31)
+    cap.add(BASE_TS + t, eth(host_id) / IP(src=client, dst=server) /
+            TCP(sport=cport, dport=dport, flags="S", seq=seq))
+    cap.add(BASE_TS + t + 0.014, eth(1) / IP(src=server, dst=client) /
+            TCP(sport=dport, dport=cport, flags="SA", seq=ack, ack=seq + 1))
+    cap.add(BASE_TS + t + 0.015, eth(host_id) / IP(src=client, dst=server) /
+            TCP(sport=cport, dport=dport, flags="A", seq=seq + 1, ack=ack + 1))
+    cap.add(BASE_TS + t + 0.016, eth(host_id) / IP(src=client, dst=server) /
+            TCP(sport=cport, dport=dport, flags="PA", seq=seq + 1) / Raw(load=hello))
+
+
+def gen_tls_malware(rng: random.Random, start: float = 40.0,
+                    duration: float = 230.0, interval: float = 20.0) -> Capture:
+    """Malware C2 inside a TLS session, plus the benign TLS it must not flag.
+
+    The benign half is not decoration. Without it the zero-false-positive result
+    would be an artefact of a capture containing nothing that could plausibly
+    fire, so this deliberately includes the three shapes most likely to break a
+    size/timing detector:
+
+      * a metrics agent posting a FIXED-size record on a perfect 15s beat --
+        it passes the timing gate outright, and is rejected only by the
+        distinct-size and lift gates. The sharpest test in the file.
+      * six parallel connections from one host to one server -- these would
+        manufacture a period if sessions were keyed on (src, dst, dport)
+        rather than the full 4-tuple.
+      * a long-lived reused connection with human-paced, irregular bursts.
+
+    The implant sends a repeating three-record check-in on a jittered beat,
+    which is what the detector actually reads. Its ClientHello is distinctive
+    and carries no SNI, but that is reported as evidence only.
+    """
+    cap = Capture("tls_malware.pcap")
+
+    # -- benign population: ordinary short TLS sessions ----------------------
+    benign_hosts = [CLIENT_NET + str(i) for i in range(12, 24)]
+    t = 2.0
+    while t < duration:
+        client = rng.choice(benign_hosts)
+        host_id = int(client.split(".")[-1])
+        server = rng.choice(EXTERNAL)
+        cport = rng.randint(20000, 60000)
+        ciphers, exts, curves, formats = rng.choice(BENIGN_PROFILES)
+        hello = client_hello(ciphers, exts, curves, formats, sni=rng.choice(REAL_DOMAINS))
+        _tls_open(cap, rng, host_id, client, server, cport, 443, t, hello)
+
+        ts = t + 0.05
+        for _ in range(rng.randint(4, 14)):
+            ts += rng.uniform(0.01, 0.4)
+            cap.add(BASE_TS + ts, eth(host_id) / IP(src=client, dst=server) /
+                    TCP(sport=cport, dport=443, flags="PA") /
+                    Raw(load=tls_record(0x17, rng.randint(90, 700))))
+            ts += rng.uniform(0.01, 0.2)
+            cap.add(BASE_TS + ts, eth(1) / IP(src=server, dst=client) /
+                    TCP(sport=443, dport=cport, flags="PA") /
+                    Raw(load=tls_record(0x17, rng.randint(300, 1380))))
+        t += rng.uniform(0.4, 1.6)
+
+    # -- benign metrics agent: fixed size, perfect beat ----------------------
+    # Passes the timing gate. Only the distinct-size and lift gates stop it,
+    # which is exactly the false positive a naive size-CV detector would emit.
+    agent = CLIENT_NET + "31"
+    collector = SERVER_NET + "80"
+    aport = 41112
+    ciphers, exts, curves, formats = BENIGN_PROFILES[1]
+    _tls_open(cap, rng, 31, agent, collector, aport, 443, 3.0,
+              client_hello(ciphers, exts, curves, formats, sni="metrics.internal"))
+    ts = 5.0
+    while ts < duration:
+        cap.add(BASE_TS + ts, eth(31) / IP(src=agent, dst=collector) /
+                TCP(sport=aport, dport=443, flags="PA") / Raw(load=tls_record(0x17, 256)))
+        cap.add(BASE_TS + ts + 0.03, eth(1) / IP(src=collector, dst=agent) /
+                TCP(sport=443, dport=aport, flags="PA") / Raw(load=tls_record(0x17, 64)))
+        ts += 15.0
+
+    # -- benign parallel connections: one host, one server, six sockets ------
+    par_host = CLIENT_NET + "33"
+    par_server = EXTERNAL[0]
+    ciphers, exts, curves, formats = BENIGN_PROFILES[0]
+    for n in range(6):
+        cport = 45000 + n
+        _tls_open(cap, rng, 33, par_host, par_server, cport, 443, 8.0 + n * 0.05,
+                  client_hello(ciphers, exts, curves, formats, sni="cdn.example.net"))
+        ts = 8.4 + n * 0.05
+        for _ in range(12):
+            ts += rng.uniform(0.02, 0.5)
+            cap.add(BASE_TS + ts, eth(33) / IP(src=par_host, dst=par_server) /
+                    TCP(sport=cport, dport=443, flags="PA") /
+                    Raw(load=tls_record(0x17, rng.randint(100, 900))))
+            ts += rng.uniform(0.01, 0.3)
+            cap.add(BASE_TS + ts, eth(1) / IP(src=par_server, dst=par_host) /
+                    TCP(sport=443, dport=cport, flags="PA") /
+                    Raw(load=tls_record(0x17, rng.randint(400, 1400))))
+
+    # -- benign long-lived reused connection, human-paced ---------------------
+    ws_host = CLIENT_NET + "35"
+    ws_server = EXTERNAL[3]
+    ws_port = 46001
+    ciphers, exts, curves, formats = BENIGN_PROFILES[2]
+    _tls_open(cap, rng, 35, ws_host, ws_server, ws_port, 8443, 6.0,
+              client_hello(ciphers, exts, curves, formats, sni="chat.example.org"))
+    ts = 7.0
+    while ts < duration:
+        for _ in range(rng.randint(1, 5)):
+            ts += rng.uniform(0.2, 2.0)
+            cap.add(BASE_TS + ts, eth(35) / IP(src=ws_host, dst=ws_server) /
+                    TCP(sport=ws_port, dport=8443, flags="PA") /
+                    Raw(load=tls_record(0x17, rng.randint(60, 1200))))
+        ts += rng.uniform(3.0, 25.0)
+
+    # -- the implant ----------------------------------------------------------
+    victim = CLIENT_NET + "77"
+    cport = 51877
+    ciphers, exts, curves, formats = MALWARE_PROFILE
+    # No SNI: the implant dials a hardcoded address and has no hostname to offer.
+    _tls_open(cap, rng, 77, victim, TLS_C2_IP, cport, 443, start,
+              client_hello(ciphers, exts, curves, formats, sni="", version=0x0301))
+
+    # A fixed-shape check-in: three records up, two down, on a jittered beat.
+    # The first two are the implant's fixed-format header and authenticator and
+    # do not change size; only the third carries tasking or collected output, so
+    # only that one varies, and only when there is something to carry. That
+    # asymmetry is the realistic shape -- an implant whose every record changed
+    # size on every beat would be a different and much noisier thing.
+    up_pattern = [188, 76, 604]
+    ts = start + 0.1
+    checkins = 0
+    while ts < start + duration:
+        for i, size in enumerate(up_pattern):
+            n = size
+            if i == len(up_pattern) - 1 and checkins % 6 == 5:
+                n = size + rng.choice([120, 240, 360])
+            cap.add(BASE_TS + ts + i * 0.02, eth(77) / IP(src=victim, dst=TLS_C2_IP) /
+                    TCP(sport=cport, dport=443, flags="PA") / Raw(load=tls_record(0x17, n)))
+        cap.add(BASE_TS + ts + 0.09, eth(1) / IP(src=TLS_C2_IP, dst=victim) /
+                TCP(sport=443, dport=cport, flags="PA") / Raw(load=tls_record(0x17, 1104)))
+        cap.add(BASE_TS + ts + 0.11, eth(1) / IP(src=TLS_C2_IP, dst=victim) /
+                TCP(sport=443, dport=cport, flags="PA") / Raw(load=tls_record(0x17, 60)))
+        checkins += 1
+        ts += interval + rng.uniform(-1.5, 1.5)
+
+    cap.truth.append(GroundTruth(
+        "TLS_MALWARE", victim, TLS_C2_IP, BASE_TS + start, BASE_TS + start + duration,
+        f"TLS C2 check-in every ~{interval:.0f}s for {duration:.0f}s: repeating "
+        f"{len(up_pattern)}-record size pattern inside one long-lived session, "
+        f"distinctive ClientHello, no SNI"))
+    return cap
+
+
 def gen_portscan(rng: random.Random, start: float = 150.0, duration: float = 12.0) -> Capture:
     """One source sweeping many ports across many hosts."""
     cap = Capture("portscan.pcap")
@@ -440,6 +655,7 @@ def build(seed: int, out_dir: str) -> dict:
         ("dns_tunnel.pcap", lambda r: gen_dns_tunnel(r), 104),
         ("exfil.pcap", lambda r: gen_exfil(r), 105),
         ("udp_amp.pcap", lambda r: gen_udp_amplification(r), 106),
+        ("tls_malware.pcap", lambda r: gen_tls_malware(r), 107),
     ]
 
     # Baseline capture: no attacks at all. The false-positive count measured on

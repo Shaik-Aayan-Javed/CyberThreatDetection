@@ -5,7 +5,7 @@ been run end-to-end on the demo machine; nothing is typed for the first time in
 front of a judge.
 
 **Before the room:** `python tools/selftest.py` — if it does not print
-`ALL 20 CHECKS PASSED`, fix that before anything else. Have two terminals open at
+`ALL 21 CHECKS PASSED`, fix that before anything else. Have two terminals open at
 the repo root with `.venv` active, and a browser at `http://127.0.0.1:8000`
 already loaded but not started.
 
@@ -41,7 +41,7 @@ Do not run this live unless you have the time — it takes a while. Instead show
 
 That sentence is worth more than the F1 table. Do not skip it.
 
-## 2. One command, five threat classes (60 s)
+## 2. One command, six threat classes (60 s)
 
 ```bash
 python engine.py data/pcaps/mixed.pcap --pretty
@@ -133,7 +133,7 @@ Three layers scroll past. Narrate:
 > "One: every module in the detection path is AST-parsed and rejected if it
 > imports a networking library. AST, not grep, so `import socket as s` is caught
 > too. Two: we replay a real capture with `socket.socket` replaced by a class
-> that raises on construction — 64,786 packets, 9 alerts, no socket created.
+> that raises on construction — 70,173 packets, 10 alerts, no socket created.
 > Three: we wrap `open` for a whole run and the only file touched is the capture,
 > mode `rb`."
 
@@ -171,29 +171,51 @@ Show `docs/throughput.json` rather than running the benchmark live:
 
 Do not let this be dragged out of you:
 
-> "Five of the six threat classes complete, one absent — and I want to be
-> precise about which. Class (a) names three shapes: SYN floods, spoofed
-> floods, and UDP reflection/amplification. All three now fire — amplification
-> is read at the victim, since a one-way tap only ever sees the
-> reflector-to-victim leg, never the spoofed attacker-to-reflector leg, which
-> never crosses this link anyway. Class (d), malware in encrypted sessions, is
-> the one gap, and it's not built at all.
+> "Five of the six threat classes complete, one partial — and I want to be
+> precise about which. Class (d), malware in encrypted sessions, asks for
+> TLS *and* QUIC metadata. We built the TLS half and not QUIC, so we call it
+> partial rather than complete.
 >
-> One thing I want to correct before you ask it: (d) does *not* require
-> decryption. It asks for JA3 fingerprints and packet-size sequences from
-> metadata. So 'no decryption' is not our excuse — the honest reason is time,
-> and that a JA3 rarity score measured against fingerprints we invented
-> ourselves would prove our parser works, not that the detection works.
+> The interesting part is what we chose not to gate on. The obvious build is
+> 'rare JA3 fingerprint equals malware'. We didn't do that, because Chrome
+> shuffles its ClientHello extension order on every connection, so every normal
+> browser session looks like a brand-new fingerprint. We measured it: on eleven
+> real public captures, three of six client hosts showed more than one
+> fingerprint and one showed eight. A rarity gate would fire on ordinary
+> browsing, and it would get *worse* the longer the sensor runs. So the
+> fingerprint is evidence an analyst can pivot on, and it decides nothing.
+>
+> What actually gates is behaviour: the sizes of the TLS records repeat on a
+> period, and they arrive on a beat. That's the class (d) wording — packet-size
+> and timing sequences — read *inside* one connection. And that matters,
+> because our beacon detector counts connections, so a single long-lived TLS
+> session with periodic check-ins is invisible to it by construction. This is
+> the detector that covers that.
 >
 > No automated blocking, because blocking needs a return path and there isn't
 > one. And no payload decryption anywhere, which is constraint (b) — that part
 > we do comply with."
 
+**If they push on validation — and they should — this is the strong answer:**
+
+> "Fair challenge, and it's the one we set ourselves. Every other capture in
+> this repo is one we wrote, so passing our own tests proves we can detect what
+> we synthesised. So we ran it against eleven public Wireshark captures we
+> didn't author: 51 real ClientHellos fingerprinted, 18 distinct fingerprints,
+> real SNI values, and zero alerts of any class.
+>
+> It also found a bug, which is the honest reason to do it. Three of those
+> captures use link type 228 — a raw IP packet with no Ethernet header, which
+> tcpdump writes for tunnel interfaces. Our reader didn't handle it, so it read
+> those files as *zero packets*, silently. Every capture we generate is
+> Ethernet, so our whole test suite was structurally incapable of catching that.
+> It's fixed, and it's written up as defect 24."
+
 Volunteering the gaps is what makes the rest of the numbers credible.
 
 ## 12. The one-line close (15 s)
 
-> "Streaming pipeline, six detectors and an unsupervised model, alerts that
+> "Streaming pipeline, seven detectors and an unsupervised model, alerts that
 > explain themselves, and an isolation constraint we prove four ways instead of
 > asserting. Three days, and every number on these slides came from a run you
 > can reproduce with a seed."
@@ -217,11 +239,12 @@ likely to survive contact are SYN flood and port scan; the parts most likely to
 need work are the DNS bigram corpus and the beacon jitter tolerance.
 
 **"You claim six threat classes — do you?"**
-No, and the README says so. Five complete, one absent. Class (a) now covers
-all three of its named shapes — SYN floods, spoofed floods, and UDP
-reflection/amplification; class (d), malware in encrypted sessions, is not
-built. We would rather be counted at five honestly than six on a claim that
-does not survive someone opening `detectors/`.
+No, and the README says so. Five complete, one partial. Class (a) covers all
+three of its named shapes — SYN floods, spoofed floods, and UDP
+reflection/amplification. Class (d) names TLS *and* QUIC metadata; we built TLS
+and not QUIC, so it is partial. We would rather be counted at five-and-a-half
+honestly than six on a claim that does not survive someone opening
+`detectors/`.
 
 **"Are there known bugs?"**
 Yes, and they are written down in `docs/DEFECTS.md` with cause and fix rather

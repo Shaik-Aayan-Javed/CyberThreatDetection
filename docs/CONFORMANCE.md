@@ -7,7 +7,7 @@ a measured number from `docs/metrics.json`, `docs/throughput.json` or
 
 **Summary:** all five architectural constraints are met, one of them
 substantially exceeded. Of the six threat classes, **five are complete, one is
-absent.**
+partial** — class (d) covers TLS but not QUIC.
 
 ---
 
@@ -90,27 +90,122 @@ record type ✓. Measured on `dns_tunnel.pcap`: entropy 4.51 bits/char, bigram
 distinguishable only by reading an evidence note, not by machine. Recorded in
 `docs/DEFECTS.md`.
 
-### (d) Malware inside encrypted sessions — **ABSENT**
+### (d) Malware inside encrypted sessions — **PARTIAL**
 
 > *"Detection from TLS/QUIC metadata alone (JA3/JA3S or JA4 fingerprints,
 > packet-size and timing sequences), without decrypting payload."*
 
-Not implemented at any layer. The gap is total: no TLS parsing in
-`ingest/reader.py` (the parser stops at L4 with a DNS-only carve-out at `:112`),
-no TLS features, no TLS traffic in the generator — every "HTTPS" session in
-`data/generate.py` is plain TCP on port 443 carrying filler bytes — and no
-detector.
+TLS is covered; QUIC is not. The clause names both, so this is partial rather
+than complete, and the split is exactly along that line.
 
-**This class does not require decryption.** JA3 is computed from ClientHello
-header fields (version, cipher list, extensions, curves), which is byte parsing.
-An earlier version of our own documentation cited PS constraint (b) as the
-reason this was skipped; that was a misreading and has been corrected. The real
-reasons are time, and that a rare-fingerprint score validated against
-fingerprints we invented would demonstrate the parser rather than the detection.
+| Element | Status | Detail |
+|---|---|---|
+| TLS metadata extraction | **Yes** | `ingest/reader.py:_attach_tls`. Sniffs the 5-byte record header on **any** TCP payload — port-agnostic, so 8443 and an implant's arbitrary port are read the same as 443 — recording record type and the length from the header. |
+| JA3 fingerprints | **Yes** | `ingest/reader.py:_attach_ja3`. Version, cipher list, extension list, curves and point formats from the ClientHello, GREASE stripped per RFC 8701, MD5 of the canonical JA3 string. SNI extracted alongside. |
+| Packet-size sequences | **Yes** | `detectors/tlsmalware.py:_periodicity`. Dominant repeating period in the record-length sequence, scored against that sequence's own analytic null. |
+| Timing sequences | **Yes** | Coefficient of variation of inter-arrival times of the same records, sub-second bursts excluded. |
+| JA3S / JA4 | No | Client-side only. JA3S needs ServerHello parsing for little added signal; JA4 is a larger change. |
+| QUIC | No | A QUIC Initial packet's headers are protected with a key derived from the connection ID. Recovering them is mechanical, but it is closer to decryption than to header parsing, and we would rather not blur constraint (b). |
 
-The closest existing capability is the beacon detector's packet-size CV
-(`beacon.py:106-108`) — a scalar dispersion measure, not the *sequence* analysis
-the PS describes.
+**What actually gates, and what deliberately does not.** Both gates are
+behavioural — properties of the *activity*, not of the client software:
+
+1. the record-size sequence repeats at some period, explaining ≥ 60 % of the
+   sequence and clearing a lift of 0.70 over what that sequence's own size
+   distribution produces by chance; and
+2. those records arrive on a beat, inter-arrival CV ≤ 0.25.
+
+**The JA3 fingerprint is evidence and never gates.** This is the single most
+important design decision in the detector, and it is a correction of the obvious
+design rather than a shortcut. JA3 is order-sensitive by definition, and Chrome
+≥ 110 permutes ClientHello extension order per connection — so on real traffic a
+"rare fingerprint" gate fires on ordinary browsing, and because a cumulative
+population never forgets, its false-positive rate would *grow with uptime*. We
+measured this rather than assuming it: see the cross-validation below, where 3
+of 6 real client hosts presented more than one fingerprint and one presented 8.
+Rarity is reported so an analyst can pivot on it; it decides nothing.
+
+Measured on `tls_malware.pcap`: period 3 explaining 86.4 % of a 25-record
+sequence, lift 0.817 against the 0.70 gate, interval CV 0.044 over 7 intervals
+at a mean 20.1 s, 5 distinct record sizes, no SNI offered. Precision / recall /
+F1 = 1.000 in `docs/metrics.json`.
+
+**Why this is not the beacon detector twice.** `detectors/beacon.py` keys on SYN
+contacts — `features/extract.py` appends to `contacts` only when `pkt.is_syn` —
+so one long-lived TLS session carrying periodic check-ins produces exactly *one*
+contact and can never reach `MIN_CONTACTS`, however metronomic it is. This
+detector reads the record sequence *inside* a single connection, which is the
+case `beacon.py` is structurally blind to.
+
+**Cross-validated against traffic we did not author.** An earlier version of
+this document gave an honest reason for not building this class: *"a
+rare-fingerprint score validated against fingerprints we invented would
+demonstrate the parser rather than the detection."* Building the detector does
+not by itself retire that objection, so `tools/tls_validate.py` exists to answer
+it. Run against 11 public Wireshark test captures (real TLS from real stacks,
+not written by us): **814 packets, 166 TLS handshake records, 51 ClientHellos
+fingerprinted, 18 distinct JA3 fingerprints, 14 carrying SNI** — real values
+including `localhost` and `reports.crashlytics.com` — and **0 alerts of any
+class, 0 `TLS_MALWARE`.** That is a false-positive count on traffic nobody here
+wrote.
+
+The gap between 166 handshake records and 51 fingerprints is not a parser
+failure, it is the reassembly limit being honest. Most of it comes from
+`tls-fragmented-handshakes.pcap`, whose entire purpose is handshakes split
+across records and segments; where the full ClientHello is not present in one
+segment we record no fingerprint rather than hashing the fragment that happened
+to arrive. That distinction matters — a fragment hashes to a plausible value
+that exists in no corpus, so it would silently poison exactly the pivoting the
+fingerprint is for.
+
+Reproducible — the captures are Wireshark's own test corpus, not vendored here
+(licensing, and they are not ours to redistribute):
+
+```bash
+BASE=https://gitlab.com/wireshark/wireshark/-/raw/master/test/captures
+curl -sSLO $BASE/tls13-rfc8446.pcap          # and the other 10, see below
+python tools/tls_validate.py tls13-rfc8446.pcap
+```
+
+The eleven used: `retrans-tls.pcap`, `tls-renegotiation.pcap`,
+`tls12-aes128ccm.pcap`, `tls12-aes256gcm.pcap`, `tls12-chacha20poly1305.pcap`,
+`tls12-dsb.pcapng`, `tls13-20-chacha20poly1305.pcap`, `tls13-rfc8446.pcap`,
+`tls-fragmented-handshakes.pcap.gz`, `tls-over-tls.pcapng.gz`,
+`tls-fragmented-over-tcp-segmented.pcapng.gz`.
+
+Two honest limits on that result. The captures are small protocol-test files,
+not a busy production link, so 0 false positives over 814 packets is
+encouraging, not conclusive. And the *rate* of periodic-looking benign sessions
+on a real network is precisely what these files cannot tell us.
+
+**The cross-validation found a real bug**, which is the best argument for having
+done it. Three of the eleven captures use link type 228 (`DLT_IPV4`, a bare IP
+packet with no Ethernet header, which `tcpdump` writes for tunnel and loopback
+interfaces). `ingest/reader.py` handled 12 and 101 but not 228, so every packet
+fell through to the Ethernet branch, produced no IP layer, and was dropped —
+**an entire capture read as zero packets, silently.** Fixed, with 229
+(`DLT_IPV6`) added alongside; recorded in `docs/DEFECTS.md`.
+
+**Accepted gaps, stated rather than shipped quietly.** TLS 1.3 record padding
+(RFC 8446 §5.4) blurs record lengths by design and defeats the size gate in one
+line of implant code; the timing gate survives padding but both are required, so
+a padding implant is missed. An implant that also jitters its check-in interval
+defeats the timing gate, at the cost of the reliability that made a fixed beat
+attractive. A ClientHello split across TCP segments is not reassembled, so its
+fingerprint is not recovered — the size and timing analysis is unaffected, since
+it reads record headers rather than the handshake. Detection latency is 145 s on
+`tls_malware.pcap`: 24 records must accumulate before periodicity means
+anything, so a slow beacon is caught late, in the same way `beacon.py` needs
+140 s.
+
+**`normal.pcap` contains no TLS at all**, so the project's headline
+zero-false-positive result on that capture says nothing about this detector. The
+false-positive evidence for class (d) is the real-capture run above and the
+benign TLS carried inside `tls_malware.pcap` itself — a metrics agent posting a
+fixed-size record on a perfect 15 s beat (it passes the timing gate outright and
+is stopped only by the distinct-size and lift gates), six parallel connections
+from one host to one server, and a long-lived reused connection with human-paced
+bursts. None of them fire.
 
 ### (e) Reconnaissance and port scanning — **COMPLETE**
 
@@ -145,9 +240,9 @@ Proven four ways rather than asserted, via `tools/isolation_check.py`:
    detectors/ alerts/ engine.py`) is AST-parsed and rejected if it imports a
    networking or subprocess library or calls `connect`/`send`/`urlopen`/`popen`.
    AST rather than grep, so `import socket as s` and `from socket import *` are
-   caught. Result: 18/18 files clean.
+   caught. Result: 19/19 files clean.
 2. **Runtime** — a real capture replayed with `socket.socket` replaced by a
-   subclass that raises on construction. 64,786 packets, 9 alerts, model loaded,
+   subclass that raises on construction. 70,173 packets, 10 alerts, model loaded,
    no socket created.
 3. **File access** — `builtins.open` wrapped for a full run; the only file
    opened is the capture, mode `rb`.
@@ -195,18 +290,23 @@ loaded:
 
 | Capture | packets/s | Mbit/s | flows/s | vs real time |
 |---|---|---|---|---|
-| `mixed.pcap` | 14,959 | 53.1 | 10,187 | 69× |
-| `synflood.pcap` | 12,737 | 25.6 | 8,520 | 81× |
+| `mixed.pcap` | 9,318 | 33.8 | 5,890 | 40× |
+| `synflood.pcap` | 16,140 | 32.4 | 10,796 | 102× |
 
 Hardware stated: `Intel64 Family 6 Model 170` (Meteor Lake), 18 logical cores,
 Windows 11, CPython 3.13, single process, no GPU. The PS asks for "flows/sec or
 Mbps"; both are given.
 
-*Measured on a dev machine with other applications running; three consecutive
-runs of `bench/throughput.py` during this pass produced real-time multiples
-from 33× to 91× on the same two captures, so treat this table as "comfortably
-above real time" rather than a precise headline number until re-measured on
-an idle machine.*
+*Measured on a dev machine with other applications running; repeated runs of
+`bench/throughput.py` across this work produced real-time multiples from 33× to
+102× on the same two captures. The spread is machine noise rather than a code
+change — in the run behind this table `mixed.pcap` got slower while
+`synflood.pcap` got faster, which no single-direction regression explains. Treat
+it as "comfortably above real time" rather than a precise headline number until
+re-measured on an idle machine. `TlsMalwareDetector`'s periodicity search is
+O(n²) in record count, so it caps records per session (128) and sessions
+examined per window (512) — a memory bound alone would not have bounded its
+CPU.*
 
 ### (e) Standardised alert schema — **MET**
 
@@ -253,7 +353,7 @@ vice versa; neither alone is sufficient.
 
 ## 5. Detection performance
 
-Per-class precision / recall / F1 = 1.00 across all six implemented classes,
+Per-class precision / recall / F1 = 1.00 across all seven implemented classes,
 macro-F1 1.00, and **0 false positives** on 16,701 packets of benign traffic.
 
 **These numbers must be read with their caveat.** We authored the captures and
@@ -266,7 +366,9 @@ otherwise, not field accuracy.
 
 ## 6. Scope boundaries
 
-**Not built, deliberately:** TLS/QUIC metadata analysis (class d); payload
+**Not built, deliberately:** QUIC metadata analysis (the unbuilt half of class
+d — Initial-packet header protection is closer to decryption than to header
+parsing); JA3S and JA4 fingerprints; payload
 decryption (out of scope per constraint b); active probing (violates the
 passive constraint, absence proven mechanically); automated blocking (needs a
 return path that does not exist); supervised classification (no labelled

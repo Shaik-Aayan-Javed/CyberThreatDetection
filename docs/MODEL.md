@@ -29,11 +29,17 @@ re-contacting the network. The first cannot.
 
 ---
 
-## 2. The six behavioural detectors
+## 2. The seven behavioural detectors
 
 Each is a small, readable function over per-window features. Thresholds are
 expressed as multiples of a **learned** baseline, not as fixed constants,
 because "3,000 SYN/s is abnormal" is only true on some links.
+
+One deliberate exception: `tlsmalware.py` declares no baseline. Its two
+thresholds are already scale-free (a fraction and a coefficient of variation)
+and its null model is computed per session from that session's own size
+distribution, so a declared-but-never-observed baseline would be the defect
+`docs/DEFECTS.md` #20 records four times over.
 
 | Detector | Module | Primary signal | Secondary signals |
 |---|---|---|---|
@@ -42,6 +48,7 @@ because "3,000 SYN/s is abnormal" is only true on some links.
 | Port scan / recon | `detectors/portscan.py` | port + host fan-out from one source | completion ratio, sequential-port run ratio, connection rate |
 | C2 beaconing | `detectors/beacon.py` | coefficient of variation of inter-arrival times | contact count, packet-size stability, persistence |
 | DGA / DNS tunnelling | `detectors/dns.py` | QNAME character entropy + bigram plausibility | unique subdomain count, label length, TXT/NULL ratio |
+| Malware in encrypted sessions | `detectors/tlsmalware.py` | repeating period in the TLS record-size sequence, scored against that sequence's own analytic null | record inter-arrival CV, distinct-size count, JA3 fingerprint and its host count (evidence only, never a gate), SNI presence |
 | Data exfiltration | `detectors/exfil.py` | outbound:inbound byte ratio to one destination | total volume, sustained duration, burstiness |
 
 Three design decisions worth calling out:
@@ -288,7 +295,8 @@ Behavioural evidence stays primary — see `engine.run()`.
 | Deep learning on raw packet bytes | No labelled data, no explainability, no time. Would not survive the "why did it fire" question. |
 | LLM-based packet analysis | Wrong tool. Adds latency and cost to a problem solved by counting. |
 | TLS/QUIC decryption | Explicitly out of scope (PS constraint b). Not implemented at any layer. |
-| **TLS/QUIC *metadata* analysis (PS class d)** | **Not built — and constraint (b) is not the reason.** See the note below; conflating these two is a misreading of the PS. |
+| QUIC metadata analysis (the unbuilt half of PS class d) | Initial-packet headers are protected with a key derived from the connection ID. Recovering them is mechanical but sits closer to decryption than to header parsing, and we would rather not blur constraint (b). |
+| JA3S and JA4 fingerprints | Client-side JA3 only. JA3S needs ServerHello parsing for little added signal; JA4 is a larger change. Noted because JA4's sorted lists would survive the extension-order permutation described below. |
 | Active probing / scanning | Violates the passive constraint. `tools/isolation_check.py` proves absence mechanically. |
 | Automated blocking | Requires a return path that does not exist. |
 | Supervised threat classifier | No labelled attack data is obtainable in this deployment model. |
@@ -296,23 +304,43 @@ Behavioural evidence stays primary — see `engine.run()`.
 ### The distinction between constraint (b) and class (d)
 
 An earlier version of this table used "TLS/QUIC decryption is out of scope" as
-the reason class (d) was unbuilt. That is wrong, and worth correcting explicitly
-rather than quietly:
+the reason class (d) was unbuilt. That was wrong, and worth correcting
+explicitly rather than quietly:
 
 - **Constraint (b)** forbids decrypting payload. We comply — the parser stops at
-  L4 plus DNS QNAMEs and never reconstructs an answer section, let alone a TLS
-  record body.
+  L4 plus DNS QNAMEs and TLS *record headers*, and never reconstructs an answer
+  section or a TLS record body.
 - **Class (d)** asks for detection *"from TLS/QUIC metadata alone (JA3/JA3S or
   JA4 fingerprints, packet-size and timing sequences), without decrypting
   payload."* It never required decryption. JA3 is computed from ClientHello
   *header* fields — version, cipher list, extensions, curves — which is byte
-  parsing, not decryption.
+  parsing, sent in the clear before any key exchange completes.
 
-So (d) was compatible with (b) all along. It is unbuilt because we ran out of
-time, and because a rare-JA3 score validated against fingerprints we invented
-ourselves would demonstrate that the parser works, not that the detection does.
-That is a weaker claim than the other five detectors can make, and it is the
-honest reason.
+That correction is now acted on rather than merely stated: the TLS half of class
+(d) is built (`detectors/tlsmalware.py`), and only QUIC remains unbuilt, for the
+narrower reason in the table above.
+
+The earlier note also said a rare-JA3 score validated against fingerprints we
+invented would demonstrate the parser rather than the detection. That objection
+was correct, and it shaped the design rather than being argued away:
+
+- **The fingerprint never gates.** Both gates are behavioural — size-sequence
+  periodicity and arrival regularity — so the detector does not depend on our
+  having guessed real-world fingerprints correctly. JA3 is reported as evidence
+  for an analyst to pivot on.
+- **The reason is measured, not asserted.** JA3 is order-sensitive by
+  definition, and Chrome ≥ 110 permutes ClientHello extension order per
+  connection. On 11 public Wireshark test captures, 3 of 6 real client hosts
+  presented more than one fingerprint and one presented 8 — so a rarity gate
+  would fire on ordinary browsing.
+- **Validation runs on traffic we did not author.** `tools/tls_validate.py`
+  against those same captures: 51 ClientHellos fingerprinted, 18 distinct
+  fingerprints, 0 alerts of any class. It also found a real ingest bug in the process
+  (`docs/DEFECTS.md` #24), which is the strongest argument for having done it.
+
+What remains honestly weaker than the other detectors: the *rate* of
+periodic-looking benign TLS on a busy production link is unknown to us, and
+small protocol-test captures cannot establish it.
 
 ## 5. Reproducing
 

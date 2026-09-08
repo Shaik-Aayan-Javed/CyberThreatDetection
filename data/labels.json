@@ -113,10 +113,27 @@
         }
       ]
     },
+    "tls_malware.pcap": {
+      "packets": 21849,
+      "duration_s": 300.261,
+      "bytes": 12746039,
+      "first_epoch": 1756200000.0,
+      "last_epoch": 1756200300.261,
+      "ground_truth": [
+        {
+          "threat_class": "TLS_MALWARE",
+          "src": "10.0.0.77",
+          "dst": "203.0.113.47",
+          "start_epoch": 1756200040.0,
+          "end_epoch": 1756200270.0,
+          "note": "TLS C2 check-in every ~20s for 230s: repeating 3-record size pattern inside one long-lived session, distinctive ClientHello, no SNI"
+        }
+      ]
+    },
     "mixed.pcap": {
-      "packets": 64786,
+      "packets": 70173,
       "duration_s": 300.731,
-      "bytes": 28744087,
+      "bytes": 31827685,
       "first_epoch": 1756200000.0,
       "last_epoch": 1756200300.731,
       "ground_truth": [
@@ -167,6 +184,14 @@
           "start_epoch": 1756200250.0,
           "end_epoch": 1756200265.0,
           "note": "NTP reflection/amplification, ~800 pkt/s x ~900B for 15s"
+        },
+        {
+          "threat_class": "TLS_MALWARE",
+          "src": "10.0.0.77",
+          "dst": "203.0.113.47",
+          "start_epoch": 1756200040.0,
+          "end_epoch": 1756200270.0,
+          "note": "TLS C2 check-in every ~20s for 230s: repeating 3-record size pattern inside one long-lived session, distinctive ClientHello, no SNI"
         }
       ]
     }
